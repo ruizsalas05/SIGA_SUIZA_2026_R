@@ -410,51 +410,14 @@ const createEmptyStudentForm = (programaId = '') => ({
   documentos_completos: true, fecha_limite_documentos: ''
 });
 
-const PROGRAMAS = [
-  { id: 'ALL', label: 'Todos los Programas' },
-  { id: '1', label: 'Administración de Operaciones Turísticas' },
-  { id: '2', label: 'Asistencia Administrativa' },
-  { id: '3', label: 'Contabilidad' },
-  { id: '4', label: 'Construcción Civil' },
-  { id: '5', label: 'Gestión Administrativa' },
-  { id: '6', label: 'Desarrollo de Sistemas de Información' },
-  { id: '7', label: 'Electricidad Industrial' },
-  { id: '8', label: 'Enfermería Técnica' },
-  { id: '9', label: 'Manejo Forestal' },
-  { id: '10', label: 'Mecatrónica Automotriz' },
-  { id: '11', label: 'Producción Agropecuaria' },
-];
-
-const PROGRAMAS_OPTIONS = [
-  { value: '', label: 'Seleccione una carrera...' },
-  ...PROGRAMAS.filter(programa => programa.id !== 'ALL').map(programa => ({
-    value: programa.id,
-    label: programa.label,
-  })),
-];
+const OPCION_TODOS_PROGRAMAS = { id: 'ALL', label: 'Todos los Programas' };
 
 const TIPOS_SANGRE = ['O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-'];
 
-const getProgramaLabel = (programaId) => {
-  const programa = PROGRAMAS.find(item => item.id === String(programaId));
-  return programa ? programa.label : 'Sin carrera seleccionada';
-};
-
-const compareStudentsByCarrera = (a, b) => {
-  const carreraA = a.programa_id ? getProgramaLabel(a.programa_id) : '';
-  const carreraB = b.programa_id ? getProgramaLabel(b.programa_id) : '';
-  if (!carreraA !== !carreraB) return carreraA ? -1 : 1;
-  const porCarrera = carreraA.localeCompare(carreraB, 'es', { sensitivity: 'base' });
-  if (porCarrera !== 0) return porCarrera;
-  const porApellidos = String(a.apellidos ?? '').localeCompare(String(b.apellidos ?? ''), 'es', { sensitivity: 'base' });
-  if (porApellidos !== 0) return porApellidos;
-  return String(a.nombres ?? '').localeCompare(String(b.nombres ?? ''), 'es', { sensitivity: 'base' });
-};
-
-function ProgramaFilter({ value, onChange }) {
+function ProgramaFilter({ value, onChange, programas }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef(null);
-  const selected = PROGRAMAS.find(p => String(p.id) === String(value)) || PROGRAMAS[0];
+  const selected = programas.find(p => String(p.id) === String(value)) || OPCION_TODOS_PROGRAMAS;
   const isAll = selected.id === 'ALL';
 
   useEffect(() => {
@@ -503,7 +466,7 @@ function ProgramaFilter({ value, onChange }) {
             <span className="text-[10px] font-bold uppercase tracking-wider text-primary/80">Filtrar por programa</span>
           </div>
           <div className="max-h-72 overflow-y-auto custom-scrollbar p-1.5" role="listbox">
-            {PROGRAMAS.map(p => {
+            {programas.map(p => {
               const active = String(p.id) === String(value);
               const all = p.id === 'ALL';
               return (
@@ -538,6 +501,7 @@ export function StudentMaster() {
   const primaryRole = user?.is_superuser ? 'superadmin' : (userRoles.length > 0 ? userRoles[0] : (user?.role || 'invitado'));
   const userRole = primaryRole;
   const [students, setStudents] = useState([]);
+  const [programas, setProgramas] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [showModal, setShowModal] = useState(false);
@@ -556,6 +520,53 @@ export function StudentMaster() {
   const [codeLoading, setCodeLoading] = useState(false);
 
   const [showMissing, setShowMissing] = useState(false);
+
+  const PROGRAMAS = [OPCION_TODOS_PROGRAMAS, ...programas.map(p => ({ id: String(p.id), label: p.nombre }))];
+  const PROGRAMAS_OPTIONS = [
+    { value: '', label: 'Seleccione una carrera...' },
+    ...PROGRAMAS.filter(programa => programa.id !== 'ALL').map(programa => ({
+      value: programa.id,
+      label: programa.label,
+    })),
+  ];
+
+  const getProgramaLabel = (programaId) => {
+    const programa = PROGRAMAS.find(item => item.id === String(programaId));
+    return programa ? programa.label : 'Sin carrera seleccionada';
+  };
+
+  const compareStudentsByCarrera = (a, b) => {
+    const carreraA = a.programa_id ? getProgramaLabel(a.programa_id) : '';
+    const carreraB = b.programa_id ? getProgramaLabel(b.programa_id) : '';
+    if (!carreraA !== !carreraB) return carreraA ? -1 : 1;
+    const porCarrera = carreraA.localeCompare(carreraB, 'es', { sensitivity: 'base' });
+    if (porCarrera !== 0) return porCarrera;
+    const porApellidos = String(a.apellidos ?? '').localeCompare(String(b.apellidos ?? ''), 'es', { sensitivity: 'base' });
+    if (porApellidos !== 0) return porApellidos;
+    return String(a.nombres ?? '').localeCompare(String(b.nombres ?? ''), 'es', { sensitivity: 'base' });
+  };
+
+  useEffect(() => {
+    let activo = true;
+    const cargarProgramas = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/mod-programas-estudio/programas`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const activos = (Array.isArray(data) ? data : []).filter(
+          p => String(p.estado || '').toLowerCase() === 'activo'
+        );
+        if (activo) setProgramas(activos);
+      } catch (e) {
+        console.error('No se pudieron cargar los programas de estudio:', e);
+        if (activo) setProgramas([]);
+      }
+    };
+    cargarProgramas();
+    return () => { activo = false; };
+  }, []);
 
   useEffect(() => {
     if (wizardBodyRef.current) {
@@ -619,13 +630,16 @@ export function StudentMaster() {
   useEffect(() => {
     if (userRole !== 'invitado') {
       if (userRole === 'secretaria_programa' && currentPrograma === 'ALL') {
-        const fallbackId = user?.email === 'secretaria_prog@siga.edu' ? '2' : '1';
-        setCurrentPrograma(user?.programa_id ? String(user.programa_id) : fallbackId);
+        if (user?.programa_id) {
+          setCurrentPrograma(String(user.programa_id));
+        } else if (programas.length > 0) {
+          setCurrentPrograma(String(programas[0].id));
+        }
       } else {
         handleSearch(searchTerm);
       }
     }
-  }, [currentPrograma, userRole]);
+  }, [currentPrograma, userRole, programas]);
 
   useEffect(() => {
     if (!showModal) return;
@@ -1312,7 +1326,7 @@ export function StudentMaster() {
 
       <div className="glass-card p-3 mb-6 flex flex-col md:flex-row md:items-center gap-3 relative z-30 lg:shrink-0">
         {['superadmin', 'admin', 'secretaria_academica', 'admin_admision'].includes(userRole) && (
-          <ProgramaFilter value={currentPrograma} onChange={setCurrentPrograma} />
+          <ProgramaFilter value={currentPrograma} onChange={setCurrentPrograma} programas={PROGRAMAS} />
         )}
         <div className="group flex-1 flex items-center gap-3 h-[56px] pl-3 pr-3 rounded-xl border-2 border-slate-200 bg-white shadow-md transition-all duration-200 focus-within:border-primary/60 focus-within:ring-4 focus-within:ring-primary/15 focus-within:shadow-lg focus-within:shadow-primary/10">
           <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-primary-dark text-white flex items-center justify-center flex-shrink-0 shadow-md shadow-primary/40 transition-transform duration-200 group-focus-within:scale-105">
