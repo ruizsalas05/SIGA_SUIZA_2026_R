@@ -1,7 +1,7 @@
-from fastapi import APIRouter, HTTPException, Depends, status, Request
+from fastapi import APIRouter, HTTPException, Depends, status, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, text
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import datetime, date
 from pydantic import BaseModel, ConfigDict, model_validator
 from database import get_db, OutboxEvent
@@ -14,6 +14,33 @@ from schemas import (
 )
 
 router = APIRouter()
+
+MENSAJE_SIN_PROGRAMA = "Tu perfil no tiene carrera asignada, contacta a administración"
+
+
+def _roles_usuario(ident: Identity) -> set:
+    return {str(rol).lower().strip() for rol in ident.roles}
+
+
+def _es_docente_restringido(ident: Identity) -> bool:
+    roles = _roles_usuario(ident)
+    if es_superadmin(ident) or "admin" in roles or "coordinador_programa" in roles:
+        return False
+    return "docente" in roles
+
+
+def _programa_forzado_identidad(ident: Identity) -> Tuple[bool, Optional[int]]:
+    roles = _roles_usuario(ident)
+    if es_superadmin(ident) or "admin" in roles or "coordinador_programa" in roles:
+        return False, None
+    if "docente" in roles or "secretaria_programa" in roles:
+        return True, ident.programa_id
+    return False, None
+
+
+def _marcar_sin_programa(response: Response) -> None:
+    response.headers["X-Message"] = MENSAJE_SIN_PROGRAMA
+
 
 # Schemas Pydantic
 class ProgramaBase(BaseModel):
@@ -159,8 +186,16 @@ async def actualizar_estado_periodo(periodo_id: int, estado: str, request: Reque
     return db_periodo
 
 @router.get("/programas", response_model=List[ProgramaResponse])
-async def obtener_programas(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(ProgramaEstudio).order_by(ProgramaEstudio.nombre))
+async def obtener_programas(request: Request, response: Response, db: AsyncSession = Depends(get_db)):
+    ident = await get_identity(request, db)
+    restringido, programa_id = _programa_forzado_identidad(ident)
+    if restringido:
+        if programa_id is None:
+            _marcar_sin_programa(response)
+            return []
+        result = await db.execute(select(ProgramaEstudio).where(ProgramaEstudio.id == programa_id))
+    else:
+        result = await db.execute(select(ProgramaEstudio).order_by(ProgramaEstudio.nombre))
     return result.scalars().all()
 
 @router.get("/programas/{programa_id}", response_model=ProgramaResponse)
@@ -518,18 +553,26 @@ class HorarioPeriodoResponse(HorarioPeriodoBase):
 # --- Endpoints Coordinación ---
 from models import CargaLectiva, HorarioPeriodo
 
-async def _validar_acceso_docente(ident: Identity, docente_id: int, db: AsyncSession):
+async def _validar_acceso_docente(ident: Identity, docente_id: int, db: AsyncSession) -> Tuple[bool, Optional[int]]:
     """
     Regla de acceso a datos de un docente:
     Permitido si user_id == docente_id, o si es superadmin,
     o si es coordinador y su programa coincide con al menos una carga_lectiva de ese docente.
+    Devuelve (restringido, programa_forzado) para los docentes con perfil propio.
     """
-    if es_superadmin(ident):
-        return
+    if es_superadmin(ident) or "admin" in _roles_usuario(ident):
+        return False, None
+    if _es_docente_restringido(ident):
+        if ident.user_id != docente_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tiene permisos para acceder a la información de este docente"
+            )
+        return True, ident.programa_id
     if ident.user_id == docente_id:
-        return
+        return False, None
     if await es_coordinador_de_docente(ident, docente_id, db):
-        return
+        return False, None
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="No tiene permisos para acceder a la información de este docente"
@@ -674,13 +717,18 @@ async def clonar_carga_lectiva(programa_id: int, req: ClonarCargaRequest, reques
     return {"message": f"Se clonaron {len(nuevas_cargas)} registros de carga lectiva."}
 
 @router.get("/docentes/{docente_id}/carga-lectiva", response_model=List[CargaLectivaResponse])
-async def listar_carga_docente(docente_id: int, request: Request, periodo_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+async def listar_carga_docente(docente_id: int, request: Request, response: Response, periodo_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
     ident = await get_identity(request, db)
-    await _validar_acceso_docente(ident, docente_id, db)
+    restringido, programa_forzado = await _validar_acceso_docente(ident, docente_id, db)
 
     query = select(CargaLectiva).where(CargaLectiva.docente_id == docente_id)
     if periodo_id:
         query = query.where(CargaLectiva.periodo_id == periodo_id)
+    if restringido:
+        if programa_forzado is None:
+            _marcar_sin_programa(response)
+            return []
+        query = query.where(CargaLectiva.programa_id == programa_forzado)
     result = await db.execute(query)
     cargas = result.scalars().all()
 
@@ -1120,10 +1168,10 @@ class PlanTrabajoDocenteResponse(PlanTrabajoDocenteBase):
 from models import Silabo, PlanTrabajoDocente
 
 @router.get("/docente/{docente_id}/carga-lectiva", response_model=List[CargaLectivaResponse])
-async def obtener_carga_docente(docente_id: int, request: Request, periodo_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+async def obtener_carga_docente(docente_id: int, request: Request, response: Response, periodo_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
     ident = await get_identity(request, db)
     await _validar_acceso_docente(ident, docente_id, db)
-    return await listar_carga_docente(docente_id=docente_id, request=request, periodo_id=periodo_id, db=db)
+    return await listar_carga_docente(docente_id=docente_id, request=request, response=response, periodo_id=periodo_id, db=db)
 
 @router.post("/silabos", response_model=SilaboResponse, status_code=status.HTTP_201_CREATED)
 async def crear_silabo(silabo: SilaboCreate, request: Request, db: AsyncSession = Depends(get_db)):
@@ -1163,16 +1211,18 @@ async def crear_silabo(silabo: SilaboCreate, request: Request, db: AsyncSession 
     return db_silabo
 
 @router.get("/docente/{docente_id}/silabos", response_model=List[SilaboResponse])
-async def listar_silabos_docente(docente_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+async def listar_silabos_docente(docente_id: int, request: Request, response: Response, db: AsyncSession = Depends(get_db)):
     ident = await get_identity(request, db)
-    await _validar_acceso_docente(ident, docente_id, db)
+    restringido, programa_forzado = await _validar_acceso_docente(ident, docente_id, db)
 
     # Get silabos that belong to the teacher's carga lectiva
-    result = await db.execute(
-        select(Silabo)
-        .join(CargaLectiva)
-        .where(CargaLectiva.docente_id == docente_id)
-    )
+    query = select(Silabo).join(CargaLectiva).where(CargaLectiva.docente_id == docente_id)
+    if restringido:
+        if programa_forzado is None:
+            _marcar_sin_programa(response)
+            return []
+        query = query.where(CargaLectiva.programa_id == programa_forzado)
+    result = await db.execute(query)
     return result.scalars().all()
 
 @router.post("/planes-trabajo", response_model=PlanTrabajoDocenteResponse, status_code=status.HTTP_201_CREATED)
@@ -1220,9 +1270,15 @@ async def crear_plan_trabajo(plan: PlanTrabajoDocenteCreate, request: Request, d
     return db_plan
 
 @router.get("/docente/{docente_id}/planes-trabajo", response_model=List[PlanTrabajoDocenteResponse])
-async def listar_planes_trabajo(docente_id: int, periodo_id: int, request: Request, programa_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+async def listar_planes_trabajo(docente_id: int, periodo_id: int, request: Request, response: Response, programa_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
     ident = await get_identity(request, db)
-    await _validar_acceso_docente(ident, docente_id, db)
+    restringido, programa_forzado = await _validar_acceso_docente(ident, docente_id, db)
+
+    if restringido:
+        if programa_forzado is None:
+            _marcar_sin_programa(response)
+            return []
+        programa_id = programa_forzado
 
     query = select(PlanTrabajoDocente).where(
         PlanTrabajoDocente.docente_id == docente_id,

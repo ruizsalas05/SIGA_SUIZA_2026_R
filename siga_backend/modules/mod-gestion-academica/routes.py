@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, status, Request, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, status, Request, Response, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, text
@@ -6,12 +6,26 @@ from sqlalchemy.orm import selectinload
 from database import get_db, OutboxEvent
 from models import Estudiante, Matricula, MatriculaDetalle
 from schemas import EstudianteCreate, EstudianteResponse, EstudianteUpdate, MatriculaCreate, MatriculaResponse, IngestaMasivaRequest
+from domain import EstadoMatricula
+from shared.identity import Identity, get_identity, es_superadmin
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from pathlib import Path
 import uuid
 
 router = APIRouter()
+
+MENSAJE_SIN_PROGRAMA = "Tu perfil no tiene carrera asignada, contacta a administración"
+
+
+def _programa_forzado_identidad(ident: Identity) -> Tuple[bool, Optional[int]]:
+    roles = {str(rol).lower().strip() for rol in ident.roles}
+    if es_superadmin(ident) or "admin" in roles or "coordinador_programa" in roles:
+        return False, None
+    if "docente" in roles or "secretaria_programa" in roles:
+        return True, ident.programa_id
+    return False, None
+
 
 FOTO_DIR = Path(__file__).resolve().parent / "uploads" / "fotos"
 ALLOWED_IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
@@ -200,12 +214,35 @@ async def crear_estudiante(request: Request, data: EstudianteCreate, db: AsyncSe
     return db_estudiante
 
 @router.get("/estudiantes/")
-async def obtener_estudiantes(programa_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+async def obtener_estudiantes(
+    request: Request,
+    response: Response,
+    programa_id: Optional[int] = None,
+    solo_matriculados: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
     import traceback
+    ident = await get_identity(request, db)
+    restringido, programa_forzado = _programa_forzado_identidad(ident)
+    if restringido:
+        if programa_forzado is None:
+            response.headers["X-Message"] = MENSAJE_SIN_PROGRAMA
+            return []
+        programa_id = programa_forzado
+
     try:
         query = select(Estudiante).order_by(Estudiante.apellidos)
         if programa_id is not None:
             query = query.where(Estudiante.programa_id == programa_id)
+        if solo_matriculados:
+            query = query.where(
+                select(Matricula.id)
+                .where(
+                    Matricula.estudiante_id == Estudiante.id,
+                    Matricula.estado_matricula.notin_(list(EstadoMatricula.anuladas())),
+                )
+                .exists()
+            )
         result = await db.execute(query)
         rows = result.scalars().all()
         print(f"[DEBUG] Estudiantes encontrados: {len(rows)}")

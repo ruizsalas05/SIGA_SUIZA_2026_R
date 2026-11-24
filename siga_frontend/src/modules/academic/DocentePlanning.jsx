@@ -31,6 +31,17 @@ export function DocentePlanning() {
   const { user } = useAuth();
   const { toast } = useSafeToast();
 
+  const userRoles = user?.is_superuser
+    ? ['superadmin']
+    : Array.isArray(user?.roles)
+      ? user.roles.map((r) => (typeof r === 'string' ? r : r.name || r.nombre))
+      : user?.role
+        ? [user.role]
+        : [];
+  const esDocente = userRoles.includes('docente') && !userRoles.some((r) => ['superadmin', 'admin', 'coordinador_programa'].includes(r));
+  const sinCarreraAsignada = esDocente && (user?.programa_id === null || user?.programa_id === undefined);
+  const programaDocente = user?.programa_id !== null && user?.programa_id !== undefined ? String(user.programa_id) : '';
+
   const [loading, setLoading] = useState(false);
   const [programs, setPrograms] = useState([]);
   const [periods, setPeriods] = useState([]);
@@ -47,6 +58,20 @@ export function DocentePlanning() {
 
   // Fetch initial data
   useEffect(() => {
+    if (!user) return;
+    if (sinCarreraAsignada) {
+      setPrograms([]);
+      setPeriods([]);
+      setCargaLectiva([]);
+      setMallaFlat([]);
+      setSilabos([]);
+      setPlanes([]);
+      setSelectedProgram('');
+      setSelectedPeriod('');
+      setLoading(false);
+      return;
+    }
+
     const fetchInitial = async () => {
       try {
         const [progRes, perRes, loadRes] = await Promise.all([
@@ -58,10 +83,10 @@ export function DocentePlanning() {
         setPeriods(perRes || []);
         setCargaLectiva(loadRes || []);
 
-        let initProg = '';
+        let initProg = esDocente ? programaDocente : '';
         let initPer = '';
         if (loadRes && loadRes.length > 0) {
-          initProg = loadRes[0].programa_id.toString();
+          if (!esDocente) initProg = loadRes[0].programa_id.toString();
           initPer = loadRes[0].periodo_id.toString();
         }
         if (!initProg && progRes && progRes.length > 0) {
@@ -77,14 +102,12 @@ export function DocentePlanning() {
         console.error('Error fetching initial data', e);
       }
     };
-    if (user) {
-      fetchInitial();
-    }
-  }, [user]);
+    fetchInitial();
+  }, [user, esDocente, programaDocente, sinCarreraAsignada]);
 
   // Fetch malla when program changes (to get unidad names)
   useEffect(() => {
-    if (!selectedProgram) {
+    if (!selectedProgram || sinCarreraAsignada) {
       setMallaFlat([]);
       return;
     }
@@ -103,11 +126,11 @@ export function DocentePlanning() {
       }
     };
     fetchMalla();
-  }, [selectedProgram]);
+  }, [selectedProgram, sinCarreraAsignada]);
 
   // Fetch Silabos and Planes when Period changes
   useEffect(() => {
-    if (!selectedProgram || !selectedPeriod || !user?.id) return;
+    if (!selectedProgram || !selectedPeriod || !user?.id || sinCarreraAsignada) return;
 
     const fetchData = async () => {
       setLoading(true);
@@ -127,7 +150,7 @@ export function DocentePlanning() {
       setLoading(false);
     };
     fetchData();
-  }, [selectedProgram, selectedPeriod, user?.id]);
+  }, [selectedProgram, selectedPeriod, user?.id, sinCarreraAsignada]);
 
   const fileInputRefSilabo = useRef(null);
   const fileInputRefPlan = useRef(null);
@@ -272,15 +295,29 @@ export function DocentePlanning() {
           <div className="flex-1">
             <p className="text-[10px] uppercase font-extrabold text-slate-400 tracking-wider mb-1">Programa de Estudios</p>
             <select
-              className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:ring-1 focus:ring-primary"
+              className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:ring-1 focus:ring-primary disabled:bg-slate-50 disabled:text-slate-500"
               value={selectedProgram}
               onChange={(e) => setSelectedProgram(e.target.value)}
+              disabled={esDocente}
             >
               <option value="">-- Seleccione Programa --</option>
-              {programs.map((p) => (
-                <option key={p.id} value={p.id}>{p.nombre}</option>
-              ))}
+              {esDocente ? (
+                !sinCarreraAsignada && (
+                  <option value={programaDocente}>
+                    {programs.find((p) => String(p.id) === programaDocente)?.nombre || 'Programa asignado'}
+                  </option>
+                )
+              ) : (
+                programs.map((p) => (
+                  <option key={p.id} value={p.id}>{p.nombre}</option>
+                ))
+              )}
             </select>
+            {sinCarreraAsignada && (
+              <p className="mt-1 text-[11px] font-semibold text-amber-700">
+                Tu perfil no tiene carrera asignada, contacta a administración
+              </p>
+            )}
           </div>
         </div>
         <div className="flex items-center space-x-3">

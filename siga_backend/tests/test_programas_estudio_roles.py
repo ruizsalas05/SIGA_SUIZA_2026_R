@@ -467,6 +467,6 @@ async def test_rutas_grupo_2_accesibles_sin_token(client_prog, fix_entorno_progr
     r2 = await client_prog.get("/periodos")
     assert r2.status_code == 200
 
-    # GET /programas responde sin token (G2)
-    r3 = await client_prog.get("/programas")
+    # GET /programas requiere identidad; superadmin ve el catálogo completo
+    r3 = await client_prog.get("/programas", headers=auth_headers(user_id=1))
     assert r3.status_code == 200

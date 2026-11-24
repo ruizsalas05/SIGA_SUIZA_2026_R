@@ -9,7 +9,7 @@ import { apiClient } from '../core/api/client';
 // Mock del contexto de autenticación
 vi.mock('../core/auth/useAuth', () => ({
   useAuth: () => ({
-    user: { id: 10, email: 'docente.test@siga.edu', full_name: 'Prof. Roberto Saboya', role: 'docente' },
+    user: { id: 10, email: 'docente.test@siga.edu', full_name: 'Prof. Roberto Saboya', role: 'docente', programa_id: 1 },
     token: 'fake-jwt-token'
   })
 }));
