@@ -1,19 +1,32 @@
-from fastapi import APIRouter, HTTPException, Depends, status, Request
+from fastapi import APIRouter, HTTPException, Depends, status, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 import bcrypt
 from database import get_db, OutboxEvent
 from models import Usuario, Rol, Permiso, PerfilPersonal
+from shared.identity import Identity, get_identity, es_superadmin
 
 
 def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 router = APIRouter()
+
+MENSAJE_SIN_PROGRAMA = "Tu perfil no tiene carrera asignada, contacta a administración"
+
+
+def _filtro_coordinador(ident: Identity) -> Tuple[bool, Optional[int]]:
+    roles = {str(rol).lower().strip() for rol in ident.roles}
+    if es_superadmin(ident) or "admin" in roles:
+        return False, None
+    if "coordinador_programa" in roles:
+        return True, ident.programa_id
+    return False, None
+
 
 # Schemas Pydantic
 class RolBase(BaseModel):
@@ -167,10 +180,29 @@ async def crear_usuario(usuario: UsuarioCreate, request: Request, db: AsyncSessi
     return result.scalar_one()
 
 @router.get("/usuarios", response_model=List[UsuarioResponse])
-async def obtener_usuarios(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Usuario).options(selectinload(Usuario.roles)).order_by(Usuario.created_at.desc())
-    )
+async def obtener_usuarios(request: Request, response: Response, db: AsyncSession = Depends(get_db)):
+    ident = await get_identity(request, db)
+    restringido, programa_forzado = _filtro_coordinador(ident)
+    if restringido and programa_forzado is None:
+        response.headers["X-Message"] = MENSAJE_SIN_PROGRAMA
+        return []
+
+    query = select(Usuario).options(selectinload(Usuario.roles)).order_by(Usuario.created_at.desc())
+    if restringido:
+        query = query.where(Usuario.roles.any(Rol.name.ilike('docente')))
+        query = query.where(
+            text("""
+                EXISTS (
+                    SELECT 1 FROM perfiles_personal pp
+                    WHERE pp.user_id = core_users.id AND pp.programa_estudio_id = :programa_id
+                )
+                OR EXISTS (
+                    SELECT 1 FROM carga_lectiva cl
+                    WHERE cl.docente_id = core_users.id AND cl.programa_id = :programa_id
+                )
+            """)
+        ).params(programa_id=programa_forzado)
+    result = await db.execute(query)
     return result.scalars().all()
 
 @router.get("/usuarios/{usuario_id}", response_model=UsuarioResponse)
@@ -373,16 +405,34 @@ async def actualizar_personal(perfil_id: int, personal: PersonalUpdate, request:
 
 
 @router.get("/personal", response_model=List[PersonalResponse])
-async def obtener_personal(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(PerfilPersonal).options(selectinload(PerfilPersonal.usuario).selectinload(Usuario.roles))
+async def obtener_personal(
+    request: Request,
+    response: Response,
+    programa_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    ident = await get_identity(request, db)
+    restringido, programa_forzado = _filtro_coordinador(ident)
+    if restringido:
+        if programa_forzado is None:
+            response.headers["X-Message"] = MENSAJE_SIN_PROGRAMA
+            return []
+        programa_id = programa_forzado
+
+    query = select(PerfilPersonal).options(
+        selectinload(PerfilPersonal.usuario).selectinload(Usuario.roles)
     )
+    if programa_id is not None:
+        query = query.where(PerfilPersonal.programa_estudio_id == programa_id)
+    if restringido:
+        query = query.where(PerfilPersonal.cargo_funcional != 'SECRETARIA_PROGRAMA')
+    result = await db.execute(query)
     perfiles = result.scalars().all()
     
-    response = []
+    respuesta = []
     for p in perfiles:
-        response.append({
+        respuesta.append({
             "usuario": p.usuario,
             "perfil": p
         })
-    return response
+    return respuesta

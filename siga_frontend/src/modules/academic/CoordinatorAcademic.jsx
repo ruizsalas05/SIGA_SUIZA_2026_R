@@ -52,6 +52,12 @@ export function CoordinatorAcademic() {
   const { toast } = useSafeToast();
   const { confirm } = useSafeConfirm();
 
+  const userRoles = Array.isArray(user?.roles)
+    ? user.roles.map(r => typeof r === 'string' ? r : (r.name || r.nombre || r.role))
+    : (user?.role ? [user.role] : []);
+  const tieneAccesoGlobal = Boolean(user?.is_superuser || userRoles.some(r => ['admin', 'superadmin'].includes(r)));
+  const isCoordinador = !tieneAccesoGlobal && userRoles.includes('coordinador_programa');
+
   const [activeTab, setActiveTab] = useState('carga'); // 'carga', 'horarios'
   const [horariosSubTab, setHorariosSubTab] = useState('visual'); // 'excel', 'visual'
   const [loading, setLoading] = useState(false);
@@ -119,15 +125,16 @@ export function CoordinatorAcademic() {
         setAllDocentes(allDocs);
 
         let hasProgram = false;
-        if (staffList.length > 0 && user) {
+        if (user) {
           const myProfile = staffList.find(p => p?.usuario?.id === user.id);
-          if (myProfile?.perfil?.programa_estudio_id) {
-            setSelectedProgram(myProfile.perfil.programa_estudio_id.toString());
+          const programaUsuario = user.programa_id || myProfile?.perfil?.programa_estudio_id;
+          if (programaUsuario) {
+            setSelectedProgram(programaUsuario.toString());
             hasProgram = true;
           }
         }
 
-        if (!hasProgram && progRes && progRes.length > 0) {
+        if (!hasProgram && !isCoordinador && progRes && progRes.length > 0) {
           setSelectedProgram(progRes[0].id.toString());
         }
 
@@ -142,7 +149,7 @@ export function CoordinatorAcademic() {
     };
 
     if (user) fetchInitial();
-  }, [user]);
+  }, [user, isCoordinador]);
 
   // 2. Load Malla and filter docentes when Program changes
   useEffect(() => {
@@ -152,13 +159,13 @@ export function CoordinatorAcademic() {
       return;
     }
 
-    // Filter personal for the selected program (or unassigned/global) and exclude secretaries
-    const filteredStaff = personal.filter(p => 
-      p?.perfil && 
-      (!p.perfil.programa_estudio_id || p.perfil.programa_estudio_id === parseInt(selectedProgram) || p.perfil.programa_estudio_id == selectedProgram) &&
-      p.perfil.cargo_funcional !== 'SECRETARIA_PROGRAMA' &&
-      p?.usuario
-    );
+    const filteredStaff = personal.filter(p => {
+      const perfil = p?.perfil;
+      if (!perfil || !p?.usuario || perfil.cargo_funcional === 'SECRETARIA_PROGRAMA') return false;
+      const coincidePrograma = String(perfil.programa_estudio_id ?? '') === String(selectedProgram);
+      const esGlobal = !isCoordinador && !perfil.programa_estudio_id;
+      return coincidePrograma || esGlobal;
+    });
     // Map to the format the form expects (d.id, d.full_name)
     const staffFormat = filteredStaff.map(p => p.usuario);
     setDocentes(staffFormat);
@@ -180,7 +187,7 @@ export function CoordinatorAcademic() {
       }
     };
     fetchMalla();
-  }, [selectedProgram, personal]);
+  }, [selectedProgram, personal, isCoordinador]);
 
   const fetchCargaYHorarios = useCallback(async () => {
     setLoading(true);
@@ -354,9 +361,6 @@ export function CoordinatorAcademic() {
     }
   };
 
-  const userRoles = Array.isArray(user?.roles) ? user.roles : (user?.role ? [user.role] : []);
-  const isCoordinador = !user?.is_superuser && userRoles.includes('coordinador_programa');
-
   return (
     <div className="space-y-6 animate-fade-in pb-12">
       <AssignmentModal 
@@ -406,7 +410,7 @@ export function CoordinatorAcademic() {
             <p className="text-[10px] uppercase font-extrabold text-slate-400 tracking-wider">Programa de Estudios</p>
             {isCoordinador ? (
               <div className="w-full bg-transparent font-bold text-slate-800 border-none p-0 text-sm mt-1">
-                {programs.find(p => p.id.toString() === selectedProgram)?.nombre || "Cargando..."}
+                {programs.find(p => p.id.toString() === selectedProgram)?.nombre || (isCoordinador ? "Sin carrera asignada" : "Cargando...")}
               </div>
             ) : (
               <select 
