@@ -645,7 +645,8 @@ export function StudentMaster() {
     }
     setLoading(true);
     try {
-      let url = `${API_BASE}/api/mod-gestion-academica/estudiantes/?solo_matriculados=true&periodo_id=${encodeURIComponent(periodo)}`;
+      const periodoParam = encodeURIComponent(periodo);
+      let url = `${API_BASE}/api/mod-gestion-academica/estudiantes/?solo_matriculados=true&periodo_id=${periodoParam}&periodo_lectivo_id=${periodoParam}`;
 
       if (programa && programa !== 'ALL') {
         url += `&programa_id=${encodeURIComponent(programa)}`;

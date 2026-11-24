@@ -27,6 +27,20 @@ def _programa_forzado_identidad(ident: Identity) -> Tuple[bool, Optional[int]]:
     return False, None
 
 
+async def _resolver_periodo_estudiantes(valor: Optional[str], db: AsyncSession) -> Optional[int]:
+    if valor is None or not str(valor).strip():
+        return None
+    texto = str(valor).strip()
+    if texto.isdigit():
+        return int(texto)
+    resultado = await db.execute(
+        text("SELECT id FROM periodos_academicos WHERE codigo = :codigo"),
+        {"codigo": texto},
+    )
+    periodo_id = resultado.scalar_one_or_none()
+    return periodo_id if periodo_id is not None else -1
+
+
 FOTO_DIR = Path(__file__).resolve().parent / "uploads" / "fotos"
 ALLOWED_IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 MAX_FOTO_SIZE = 5 * 1024 * 1024  # 5 MB
@@ -219,12 +233,20 @@ async def obtener_estudiantes(
     response: Response,
     programa_id: Optional[int] = None,
     solo_matriculados: bool = False,
-    periodo_id: Optional[int] = None,
-    periodo_lectivo_id: Optional[int] = None,
+    periodo_id: Optional[str] = None,
+    periodo_lectivo_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
     import traceback
-    ident = await get_identity(request, db)
+    try:
+        ident = await get_identity(request, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] obtener_estudiantes identidad: {e}\n{traceback.format_exc()}")
+        response.headers["X-Message"] = "No se pudo validar la identidad del usuario."
+        return []
+
     restringido, programa_forzado = _programa_forzado_identidad(ident)
     if restringido:
         if programa_forzado is None:
@@ -232,8 +254,12 @@ async def obtener_estudiantes(
             return []
         programa_id = programa_forzado
 
-    if periodo_id is None:
-        periodo_id = periodo_lectivo_id
+    try:
+        periodo_id = await _resolver_periodo_estudiantes(periodo_id or periodo_lectivo_id, db)
+    except Exception as e:
+        print(f"[ERROR] resolver periodo: {e}\n{traceback.format_exc()}")
+        response.headers["X-Message"] = "No se pudo resolver el periodo lectivo solicitado."
+        return []
 
     try:
         query = select(Estudiante).order_by(Estudiante.apellidos)
@@ -286,9 +312,9 @@ async def obtener_estudiantes(
             for r in rows
         ]
     except Exception as e:
-        tb = traceback.format_exc()
-        print(f"[ERROR] obtener_estudiantes: {e}\n{tb}")
-        return {"error": str(e), "type": type(e).__name__, "traceback": tb}
+        print(f"[ERROR] obtener_estudiantes: {e}\n{traceback.format_exc()}")
+        response.headers["X-Message"] = "No se pudo cargar el catálogo de estudiantes."
+        return []
 
 @router.get("/estudiantes/siguiente-codigo")
 async def obtener_siguiente_codigo(db: AsyncSession = Depends(get_db)):
