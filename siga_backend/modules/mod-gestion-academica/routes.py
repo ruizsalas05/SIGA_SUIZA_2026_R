@@ -219,6 +219,8 @@ async def obtener_estudiantes(
     response: Response,
     programa_id: Optional[int] = None,
     solo_matriculados: bool = False,
+    periodo_id: Optional[int] = None,
+    periodo_lectivo_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
 ):
     import traceback
@@ -230,19 +232,33 @@ async def obtener_estudiantes(
             return []
         programa_id = programa_forzado
 
+    if periodo_id is None:
+        periodo_id = periodo_lectivo_id
+
     try:
         query = select(Estudiante).order_by(Estudiante.apellidos)
-        if programa_id is not None:
-            query = query.where(Estudiante.programa_id == programa_id)
-        if solo_matriculados:
-            query = query.where(
-                select(Matricula.id)
-                .where(
-                    Matricula.estudiante_id == Estudiante.id,
-                    Matricula.estado_matricula.notin_(list(EstadoMatricula.anuladas())),
-                )
-                .exists()
+        estados_anuladas = list(EstadoMatricula.anuladas())
+        if periodo_id is not None:
+            matricula_periodo = select(Matricula.id).where(
+                Matricula.estudiante_id == Estudiante.id,
+                Matricula.periodo_id == periodo_id,
+                Matricula.estado_matricula.notin_(estados_anuladas),
             )
+            if programa_id is not None:
+                matricula_periodo = matricula_periodo.where(Matricula.programa_id == programa_id)
+            query = query.where(matricula_periodo.exists())
+        else:
+            if programa_id is not None:
+                query = query.where(Estudiante.programa_id == programa_id)
+            if solo_matriculados:
+                query = query.where(
+                    select(Matricula.id)
+                    .where(
+                        Matricula.estudiante_id == Estudiante.id,
+                        Matricula.estado_matricula.notin_(estados_anuladas),
+                    )
+                    .exists()
+                )
         result = await db.execute(query)
         rows = result.scalars().all()
         print(f"[DEBUG] Estudiantes encontrados: {len(rows)}")

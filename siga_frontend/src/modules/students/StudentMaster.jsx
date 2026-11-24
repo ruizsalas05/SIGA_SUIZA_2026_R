@@ -8,7 +8,7 @@ import { EditStudentModal } from './EditStudentModal';
 import { StudentDetail } from './StudentDetail';
 import { ProtectedImage } from './ProtectedImage';
 import { DEPARTAMENTOS, getProvincias, getDistritos } from './ubigeoPeru';
-import { GraduationCap, Search, CloudDownload, Plus, Users, Pencil, ChevronRight, ChevronLeft, ChevronDown, Check, LayoutGrid, Info, X, Mail, Phone, MapPin, CheckCircle2, FileCheck2, UserPlus, Sparkles, Camera, Trash2, AlertTriangle, Eye, CreditCard } from 'lucide-react';
+import { GraduationCap, Search, CloudDownload, Plus, Users, Pencil, ChevronRight, ChevronLeft, ChevronDown, Check, LayoutGrid, Info, X, Mail, Phone, MapPin, CheckCircle2, FileCheck2, UserPlus, Sparkles, Camera, Trash2, AlertTriangle, Eye, CreditCard, Calendar } from 'lucide-react';
 
 // Puente entre sectores: Línea con puntitos unida a cada extremo con degradé dinámico según el estado
 const SectorBridge = ({ fromStepId, currentStep }) => {
@@ -411,6 +411,7 @@ const createEmptyStudentForm = (programaId = '') => ({
 });
 
 const OPCION_TODOS_PROGRAMAS = { id: 'ALL', label: 'Todos los Programas' };
+const ESTADOS_PERIODO_ACTIVO = ['activo', 'matricula_abierta', 'en_curso'];
 
 const TIPOS_SANGRE = ['O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-'];
 
@@ -494,6 +495,81 @@ function ProgramaFilter({ value, onChange, programas }) {
   );
 }
 
+function PeriodoFilter({ value, onChange, periodos }) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef(null);
+  const selected = periodos.find(p => String(p.id) === String(value));
+
+  useEffect(() => {
+    if (!open) return;
+    const onClickOutside = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) setOpen(false);
+    };
+    const onKeyDown = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onClickOutside);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onClickOutside);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={containerRef} className="relative w-full md:w-72">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className={`group w-full flex items-center gap-3 h-[56px] pl-3 pr-4 rounded-xl border-2 bg-gradient-to-r from-white to-primary/5 shadow-md transition-all duration-200
+          ${open ? 'border-primary ring-4 ring-primary/15 shadow-lg shadow-primary/25' : 'border-primary/30 shadow-primary/10 hover:border-primary/60 hover:shadow-lg hover:shadow-primary/20'}`}
+      >
+        <span className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-white bg-gradient-to-br from-primary to-primary-dark shadow-md shadow-primary/40">
+          <Calendar size={18} />
+        </span>
+        <span className="flex-1 min-w-0 text-left">
+          <span className="block text-[10px] font-bold uppercase tracking-wider text-primary/70 leading-none mb-1">Periodo Lectivo</span>
+          <span className="block text-sm font-bold text-slate-text truncate">{selected?.codigo || 'Sin periodo activo'}</span>
+        </span>
+        <ChevronDown size={18} className={`flex-shrink-0 text-primary transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute z-40 mt-2 w-full origin-top rounded-xl border border-primary/20 bg-white/95 backdrop-blur-md shadow-2xl shadow-primary/15 overflow-hidden animate-fade-in-up">
+          <div className="px-4 py-2.5 bg-gradient-to-r from-primary/5 to-transparent border-b border-slate-100">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-primary/80">Filtrar por periodo lectivo</span>
+          </div>
+          <div className="max-h-72 overflow-y-auto custom-scrollbar p-1.5" role="listbox">
+            {periodos.map(p => {
+              const active = String(p.id) === String(value);
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  onClick={() => { onChange(String(p.id)); setOpen(false); }}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-sm transition-colors
+                    ${active ? 'bg-primary-soft text-primary-dark font-bold' : 'text-slate-600 font-medium hover:bg-slate-100'}`}
+                >
+                  <span className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0
+                    ${active ? 'bg-primary text-white' : 'bg-slate-100 text-slate-400'}`}>
+                    {active ? <Check size={15} /> : <Calendar size={14} />}
+                  </span>
+                  <span className="flex-1 truncate">{p.codigo}</span>
+                  {ESTADOS_PERIODO_ACTIVO.includes(String(p.estado || '').toLowerCase()) && (
+                    <span className="shrink-0 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">Activo</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function StudentMaster() {
   const { user } = useAuth();
   const toast = useToast();
@@ -502,18 +578,26 @@ export function StudentMaster() {
   const userRole = primaryRole;
   const [students, setStudents] = useState([]);
   const [programas, setProgramas] = useState([]);
+  const [periodos, setPeriodos] = useState([]);
+  const [currentPeriodo, setCurrentPeriodo] = useState('');
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingStudent, setEditingStudent] = useState(null);
   const [wizardStep, setWizardStep] = useState(1);
   const [selectedStudent, setSelectedStudent] = useState(null);
-  const [currentPrograma, setCurrentPrograma] = useState('ALL');
+  const [currentPrograma, setCurrentPrograma] = useState(() =>
+    userRole === 'secretaria_programa' && user?.programa_id ? String(user.programa_id) : 'ALL'
+  );
   const [stepDir, setStepDir] = useState('forward');
   const [loadError, setLoadError] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const wizardBodyRef = useRef(null);
+  const currentProgramaRef = useRef(currentPrograma);
+  const currentPeriodoRef = useRef(currentPeriodo);
+  const searchTermRef = useRef(searchTerm);
+  const handleSearchRef = useRef(null);
 
   const [form, setForm] = useState(() => createEmptyStudentForm());
   const [submitting, setSubmitting] = useState(false);
@@ -546,6 +630,99 @@ export function StudentMaster() {
     return String(a.nombres ?? '').localeCompare(String(b.nombres ?? ''), 'es', { sensitivity: 'base' });
   };
 
+  const handleSearch = async (val = '') => {
+    searchTermRef.current = val;
+    setSearchTerm(val);
+    setCurrentPage(1);
+    setLoadError(null);
+    if (userRole === 'invitado') return;
+    const programa = currentProgramaRef.current;
+    const periodo = currentPeriodoRef.current;
+    if (!periodo) {
+      setStudents([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      let url = `${API_BASE}/api/mod-gestion-academica/estudiantes/?solo_matriculados=true&periodo_id=${encodeURIComponent(periodo)}`;
+
+      if (programa && programa !== 'ALL') {
+        url += `&programa_id=${encodeURIComponent(programa)}`;
+      }
+
+      const res = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      });
+
+      if (!res.ok) {
+        let detalle = `El servicio de estudiantes respondio ${res.status}.`;
+        try {
+          const cuerpo = await res.json();
+          detalle = cuerpo.detail || cuerpo.message || detalle;
+        } catch { /* cuerpo no-JSON */ }
+        console.error('API Error:', detalle);
+        setStudents([]);
+        setLoadError(detalle);
+        setLoading(false);
+        return;
+      }
+
+      if (res.headers.get('X-Fallback') === 'true') {
+        const detalle = res.headers.get('X-Fallback-Message')
+          || 'El servicio de estudiantes respondio con datos degradados.';
+        console.error('Respuesta degradada:', detalle);
+        setStudents([]);
+        setLoadError(detalle);
+        setLoading(false);
+        return;
+      }
+
+      const data = await res.json();
+      const dataArray = Array.isArray(data) ? data : [];
+      const sorted = [...dataArray].sort(compareStudentsByCarrera);
+
+      const term = String(val || '').trim();
+      if (term.length >= 3) {
+        const lowerTerm = term.toLowerCase();
+        const filtered = sorted.filter(s => {
+          const dni = String(s.dni ?? '');
+          const nombres = String(s.nombres ?? '').toLowerCase();
+          const apellidos = String(s.apellidos ?? '').toLowerCase();
+          const codigo = String(s.codigo_estudiante ?? '');
+          return dni.includes(term)
+            || nombres.includes(lowerTerm)
+            || apellidos.includes(lowerTerm)
+            || codigo.includes(term);
+        });
+        setStudents(filtered);
+      } else {
+        setStudents(sorted);
+      }
+    } catch (e) {
+      console.error(e);
+      setStudents([]);
+      setLoadError('No se pudo conectar con el servidor. Verifique que el backend este levantado.');
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    handleSearchRef.current = handleSearch;
+  });
+
+  const applyPrograma = (value) => {
+    currentProgramaRef.current = value;
+    setCurrentPrograma(value);
+    handleSearchRef.current(searchTermRef.current);
+  };
+
+  const applyPeriodo = (value) => {
+    currentPeriodoRef.current = value;
+    setCurrentPeriodo(value);
+    handleSearchRef.current(searchTermRef.current);
+  };
+
   useEffect(() => {
     let activo = true;
     const cargarProgramas = async () => {
@@ -558,13 +735,53 @@ export function StudentMaster() {
         const activos = (Array.isArray(data) ? data : []).filter(
           p => String(p.estado || '').toLowerCase() === 'activo'
         );
-        if (activo) setProgramas(activos);
+        if (activo) {
+          setProgramas(activos);
+          if (userRole === 'secretaria_programa' && activos.length > 0 && currentProgramaRef.current === 'ALL') {
+            const programa = String(activos[0].id);
+            currentProgramaRef.current = programa;
+            setCurrentPrograma(programa);
+            handleSearchRef.current(searchTermRef.current);
+          }
+        }
       } catch (e) {
         console.error('No se pudieron cargar los programas de estudio:', e);
         if (activo) setProgramas([]);
       }
     };
     cargarProgramas();
+    return () => { activo = false; };
+  }, [userRole]);
+
+  useEffect(() => {
+    let activo = true;
+    const cargarPeriodos = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/mod-programas-estudio/periodos`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const lista = Array.isArray(data) ? data : [];
+        const periodoActivo = lista.find(p => ESTADOS_PERIODO_ACTIVO.includes(String(p.estado || '').toLowerCase()));
+        const periodo = periodoActivo ? String(periodoActivo.id) : '';
+        if (activo) {
+          setPeriodos(lista);
+          currentPeriodoRef.current = periodo;
+          setCurrentPeriodo(periodo);
+          handleSearchRef.current(searchTermRef.current);
+        }
+      } catch (e) {
+        console.error('No se pudieron cargar los periodos lectivos:', e);
+        if (activo) {
+          setPeriodos([]);
+          currentPeriodoRef.current = '';
+          setCurrentPeriodo('');
+          handleSearchRef.current(searchTermRef.current);
+        }
+      }
+    };
+    cargarPeriodos();
     return () => { activo = false; };
   }, []);
 
@@ -628,20 +845,6 @@ export function StudentMaster() {
   };
 
   useEffect(() => {
-    if (userRole !== 'invitado') {
-      if (userRole === 'secretaria_programa' && currentPrograma === 'ALL') {
-        if (user?.programa_id) {
-          setCurrentPrograma(String(user.programa_id));
-        } else if (programas.length > 0) {
-          setCurrentPrograma(String(programas[0].id));
-        }
-      } else {
-        handleSearch(searchTerm);
-      }
-    }
-  }, [currentPrograma, userRole, programas]);
-
-  useEffect(() => {
     if (!showModal) return;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -652,74 +855,6 @@ export function StudentMaster() {
       window.removeEventListener('keydown', onKeyDown);
     };
   }, [showModal]);
-
-  const handleSearch = async (val = '') => {
-    setSearchTerm(val);
-    setCurrentPage(1);
-    setLoading(true);
-    setLoadError(null);
-    try {
-      let url = `${API_BASE}/api/mod-gestion-academica/estudiantes/`;
-
-      if (currentPrograma && currentPrograma !== 'ALL') {
-        url += `?programa_id=${currentPrograma}`;
-      }
-
-      const res = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-      });
-
-      if (!res.ok) {
-        let detalle = `El servicio de estudiantes respondio ${res.status}.`;
-        try {
-          const cuerpo = await res.json();
-          detalle = cuerpo.detail || cuerpo.message || detalle;
-        } catch { /* cuerpo no-JSON */ }
-        console.error('API Error:', detalle);
-        setStudents([]);
-        setLoadError(detalle);
-        setLoading(false);
-        return;
-      }
-
-      if (res.headers.get('X-Fallback') === 'true') {
-        const detalle = res.headers.get('X-Fallback-Message')
-          || 'El servicio de estudiantes respondio con datos degradados.';
-        console.error('Respuesta degradada:', detalle);
-        setStudents([]);
-        setLoadError(detalle);
-        setLoading(false);
-        return;
-      }
-
-      const data = await res.json();
-      const dataArray = Array.isArray(data) ? data : [];
-      const sorted = [...dataArray].sort(compareStudentsByCarrera);
-
-      const term = String(val || '').trim();
-      if (term.length >= 3) {
-        const lowerTerm = term.toLowerCase();
-        const filtered = sorted.filter(s => {
-          const dni = String(s.dni ?? '');
-          const nombres = String(s.nombres ?? '').toLowerCase();
-          const apellidos = String(s.apellidos ?? '').toLowerCase();
-          const codigo = String(s.codigo_estudiante ?? '');
-          return dni.includes(term)
-            || nombres.includes(lowerTerm)
-            || apellidos.includes(lowerTerm)
-            || codigo.includes(term);
-        });
-        setStudents(filtered);
-      } else {
-        setStudents(sorted);
-      }
-    } catch (e) {
-      console.error(e);
-      setStudents([]);
-      setLoadError('No se pudo conectar con el servidor. Verifique que el backend este levantado.');
-    }
-    setLoading(false);
-  };
 
   const handleFotoChange = (e) => {
     const file = e.target.files?.[0];
@@ -1325,8 +1460,9 @@ export function StudentMaster() {
       </div>
 
       <div className="glass-card p-3 mb-6 flex flex-col md:flex-row md:items-center gap-3 relative z-30 lg:shrink-0">
+        <PeriodoFilter value={currentPeriodo} onChange={applyPeriodo} periodos={periodos} />
         {['superadmin', 'admin', 'secretaria_academica', 'admin_admision'].includes(userRole) && (
-          <ProgramaFilter value={currentPrograma} onChange={setCurrentPrograma} programas={PROGRAMAS} />
+          <ProgramaFilter value={currentPrograma} onChange={applyPrograma} programas={PROGRAMAS} />
         )}
         <div className="group flex-1 flex items-center gap-3 h-[56px] pl-3 pr-3 rounded-xl border-2 border-slate-200 bg-white shadow-md transition-all duration-200 focus-within:border-primary/60 focus-within:ring-4 focus-within:ring-primary/15 focus-within:shadow-lg focus-within:shadow-primary/10">
           <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-primary-dark text-white flex items-center justify-center flex-shrink-0 shadow-md shadow-primary/40 transition-transform duration-200 group-focus-within:scale-105">
@@ -1451,7 +1587,9 @@ export function StudentMaster() {
                       {loadError ? 'Datos no disponibles' : 'No se encontraron estudiantes'}
                     </p>
                     <p className="text-slate-500 text-xs mt-1 max-w-md mx-auto">
-                      {loadError || 'No hay estudiantes que coincidan con los criterios de búsqueda o el programa seleccionado.'}
+                      {loadError || (currentPeriodo
+                        ? 'No hay estudiantes matriculados en el periodo lectivo y programa seleccionados.'
+                        : 'Selecciona un periodo lectivo activo para ver la nómina de estudiantes.')}
                     </p>
                   </td>
                 </tr>
