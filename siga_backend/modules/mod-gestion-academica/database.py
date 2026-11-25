@@ -63,12 +63,12 @@ async def _backfill_periodo_admision(conn):
         async with conn.begin_nested():
             await conn.execute(text("""
                 UPDATE estudiantes e
-                SET periodo_admision_id = p.id
-                FROM outbox_events oe, periodos_academicos p
+                SET periodo_admision_id = (oe.payload->'data'->>'periodo_id')::int
+                FROM outbox_events oe
                 WHERE e.periodo_admision_id IS NULL
                   AND oe.event_type = 'gestion_academica.admision.estudiante_ingresado'
                   AND (oe.payload->'data'->>'estudiante_id')::int = e.id
-                  AND p.codigo = replace(oe.payload->>'proceso_admision_id', 'ADM-', '')
+                  AND NULLIF(oe.payload->'data'->>'periodo_id', '') ~ '^\\d+$'
             """))
     except Exception as exc:
         print(f"  • backfill periodo_admision_id skipped: {exc}")

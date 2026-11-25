@@ -1,21 +1,27 @@
 import { useState, useEffect } from 'react';
 import { apiClient } from '../../core/api/client';
 import { useToast } from '../../core/ui/ToastContext';
-import { X, Lightbulb, Calendar, Plus, Clock, ArrowRight } from 'lucide-react';
+import { X, Lightbulb, Calendar, Plus, Clock, ArrowRight, Pencil, Save } from 'lucide-react';
+
+const periodoVacio = () => ({
+  codigo: '',
+  fecha_inicio: '',
+  fecha_fin: '',
+  fecha_fin_matricula_regular: '',
+  fecha_fin_matricula_extemporanea: '',
+  estado: 'planificacion'
+});
+
+const aFechaInput = (valor) => valor ? String(valor).slice(0, 10) : '';
 
 export function PeriodManager({ onClose, onUpdate }) {
   const toast = useToast();
   const [periods, setPeriods] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [newPeriod, setNewPeriod] = useState({
-    codigo: '',
-    fecha_inicio: '',
-    fecha_fin: '',
-    fecha_fin_matricula_regular: '',
-    fecha_fin_matricula_extemporanea: '',
-    estado: 'planificacion'
-  });
+  const [editingId, setEditingId] = useState(null);
+  const [formError, setFormError] = useState('');
+  const [newPeriod, setNewPeriod] = useState(periodoVacio);
 
   const fetchPeriods = async () => {
     setLoading(true);
@@ -33,18 +39,63 @@ export function PeriodManager({ onClose, onUpdate }) {
     fetchPeriods();
   }, []);
 
-  const handleCreate = async (e) => {
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setFormError('');
+    setNewPeriod(periodoVacio());
+  };
+
+  const handleEdit = (period) => {
+    setEditingId(period.id);
+    setFormError('');
+    setNewPeriod({
+      codigo: period.codigo || '',
+      fecha_inicio: aFechaInput(period.fecha_inicio),
+      fecha_fin: aFechaInput(period.fecha_fin),
+      fecha_fin_matricula_regular: aFechaInput(period.fecha_fin_matricula_regular),
+      fecha_fin_matricula_extemporanea: aFechaInput(period.fecha_fin_matricula_extemporanea),
+      estado: period.estado || 'planificacion'
+    });
+  };
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    setFormError('');
     setIsSubmitting(true);
     try {
-      await apiClient.callModule('mod-programas-estudio', 'periodos', 'POST', newPeriod);
-      setNewPeriod({ codigo: '', fecha_inicio: '', fecha_fin: '', fecha_fin_matricula_regular: '', fecha_fin_matricula_extemporanea: '', estado: 'planificacion' });
+      if (editingId) {
+        const original = periods.find((period) => period.id === editingId);
+        const camposFecha = ['fecha_inicio', 'fecha_fin', 'fecha_fin_matricula_regular', 'fecha_fin_matricula_extemporanea'];
+        const cambioRelevante = original && (
+          original.codigo !== newPeriod.codigo ||
+          camposFecha.some((campo) => aFechaInput(original[campo]) !== newPeriod[campo])
+        );
+        if (cambioRelevante) {
+          const matriculas = await apiClient.callModule('mod-gestion-academica', 'matriculas/');
+          const tieneMatriculas = Array.isArray(matriculas) && matriculas.some((matricula) => matricula.periodo_id === editingId);
+          if (tieneMatriculas && !window.confirm('Este periodo ya tiene matrículas asociadas. ¿Deseas continuar con el cambio?')) {
+            return;
+          }
+        }
+        await apiClient.callModule('mod-programas-estudio', `periodos/${editingId}`, 'PUT', {
+          codigo: newPeriod.codigo,
+          fecha_inicio: newPeriod.fecha_inicio || null,
+          fecha_fin: newPeriod.fecha_fin || null,
+          fecha_fin_matricula_regular: newPeriod.fecha_fin_matricula_regular || null,
+          fecha_fin_matricula_extemporanea: newPeriod.fecha_fin_matricula_extemporanea || null
+        });
+        toast.success('Periodo académico actualizado exitosamente');
+      } else {
+        await apiClient.callModule('mod-programas-estudio', 'periodos', 'POST', newPeriod);
+        toast.success('Periodo académico creado exitosamente');
+      }
+      handleCancelEdit();
       fetchPeriods();
       if (onUpdate) onUpdate();
-      toast.success('Periodo académico creado exitosamente');
     } catch (error) {
-      console.error('Error creating period:', error);
-      toast.error(error.message || 'Hubo un error al crear el periodo');
+      const mensaje = error.message || (editingId ? 'Hubo un error al actualizar el periodo' : 'Hubo un error al crear el periodo');
+      setFormError(mensaje);
+      toast.error(mensaje);
     } finally {
       setIsSubmitting(false);
     }
@@ -125,10 +176,10 @@ export function PeriodManager({ onClose, onUpdate }) {
           {/* Formulario Lateral */}
           <div className="w-full md:w-5/12 p-6 bg-slate-50/60 border-r border-slate-100 overflow-y-auto">
             <div className="flex items-center gap-1.5 mb-4">
-              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Crear Periodo</span>
+              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">{editingId ? 'Editar Periodo' : 'Crear Periodo'}</span>
             </div>
 
-            <form onSubmit={handleCreate} className="space-y-3.5">
+            <form onSubmit={handleSubmit} className="space-y-3.5">
               <div>
                 <label className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">Código del Periodo</label>
                 <input 
@@ -171,7 +222,7 @@ export function PeriodManager({ onClose, onUpdate }) {
                   className="w-full px-2.5 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all" 
                   value={newPeriod.fecha_fin_matricula_regular} 
                   onChange={e => setNewPeriod({...newPeriod, fecha_fin_matricula_regular: e.target.value})}
-                  required 
+                  required={!editingId}
                 />
               </div>
 
@@ -182,7 +233,7 @@ export function PeriodManager({ onClose, onUpdate }) {
                   className="w-full px-2.5 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all" 
                   value={newPeriod.fecha_fin_matricula_extemporanea} 
                   onChange={e => setNewPeriod({...newPeriod, fecha_fin_matricula_extemporanea: e.target.value})}
-                  required 
+                  required={!editingId}
                 />
               </div>
 
@@ -192,12 +243,19 @@ export function PeriodManager({ onClose, onUpdate }) {
                   className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all" 
                   value={newPeriod.estado} 
                   onChange={e => setNewPeriod({...newPeriod, estado: e.target.value})}
+                  disabled={!!editingId}
                 >
                   <option value="planificacion">Planificación</option>
                   <option value="matricula_abierta">Matrícula Abierta</option>
                   <option value="en_curso">En Curso</option>
                 </select>
               </div>
+
+              {formError && (
+                <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-[11px] leading-relaxed">
+                  {formError}
+                </div>
+              )}
 
               <button 
                 type="submit" 
@@ -206,6 +264,11 @@ export function PeriodManager({ onClose, onUpdate }) {
               >
                 {isSubmitting ? (
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                ) : editingId ? (
+                  <>
+                    <Save size={15} />
+                    <span>Guardar cambios</span>
+                  </>
                 ) : (
                   <>
                     <Plus size={15} />
@@ -213,6 +276,16 @@ export function PeriodManager({ onClose, onUpdate }) {
                   </>
                 )}
               </button>
+
+              {editingId && (
+                <button
+                  type="button"
+                  onClick={handleCancelEdit}
+                  className="w-full py-2 mt-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+                >
+                  Cancelar edición
+                </button>
+              )}
             </form>
             
             <div className="mt-5 p-3.5 rounded-xl bg-slate-100/70 border border-slate-200/80 text-[11px] text-slate-600 leading-relaxed">
@@ -284,6 +357,15 @@ export function PeriodManager({ onClose, onUpdate }) {
                             <option value="en_curso">En Curso</option>
                             <option value="historico">Histórico</option>
                           </select>
+                          <button
+                            type="button"
+                            onClick={() => handleEdit(period)}
+                            className="p-1.5 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                            aria-label={`Editar ${period.codigo}`}
+                            title="Editar periodo"
+                          >
+                            <Pencil size={13} />
+                          </button>
                         </div>
                       </div>
                     </div>

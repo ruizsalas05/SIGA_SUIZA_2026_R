@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, status, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, text
+from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Tuple
 from datetime import datetime, date
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -42,6 +43,25 @@ def _marcar_sin_programa(response: Response) -> None:
     response.headers["X-Message"] = MENSAJE_SIN_PROGRAMA
 
 
+async def _puede_editar_periodos(request: Request, db: AsyncSession) -> bool:
+    ident = await get_identity(request, db)
+    if es_superadmin(ident):
+        return True
+    resultado = await db.execute(
+        text("""
+            SELECT 1
+            FROM core_user_roles ur
+            JOIN core_roles r ON r.id = ur.role_id
+            JOIN core_role_permissions rp ON rp.role_id = r.id
+            JOIN core_permissions p ON p.id = rp.permission_id
+            WHERE ur.user_id = :uid AND p.name = :permiso
+            LIMIT 1
+        """),
+        {"uid": ident.user_id, "permiso": "mod-programas-estudio:write"},
+    )
+    return resultado.fetchone() is not None
+
+
 # Schemas Pydantic
 class ProgramaBase(BaseModel):
     nombre: str
@@ -73,6 +93,13 @@ class PeriodoBase(BaseModel):
 
 class PeriodoCreate(PeriodoBase):
     pass
+
+class PeriodoUpdate(BaseModel):
+    codigo: Optional[str] = None
+    fecha_inicio: Optional[datetime] = None
+    fecha_fin: Optional[datetime] = None
+    fecha_fin_matricula_regular: Optional[datetime] = None
+    fecha_fin_matricula_extemporanea: Optional[datetime] = None
 
 class PeriodoResponse(PeriodoBase):
     id: int
@@ -184,6 +211,81 @@ async def actualizar_estado_periodo(periodo_id: int, estado: str, request: Reque
     await db.commit()
     await db.refresh(db_periodo)
     return db_periodo
+
+@router.put("/periodos/{periodo_id}", response_model=PeriodoResponse)
+async def actualizar_periodo(periodo_id: int, periodo_data: PeriodoUpdate, request: Request, db: AsyncSession = Depends(get_db)):
+    if not await _puede_editar_periodos(request, db):
+        raise HTTPException(status_code=403, detail="Permisos insuficientes. Se requiere mod-programas-estudio:write")
+
+    resultado = await db.execute(select(PeriodoAcademico).where(PeriodoAcademico.id == periodo_id))
+    db_periodo = resultado.scalar_one_or_none()
+    if not db_periodo:
+        raise HTTPException(status_code=404, detail="Periodo no encontrado")
+
+    cambios = periodo_data.model_dump(exclude_unset=True)
+    try:
+        claves_fecha = ['fecha_inicio', 'fecha_fin', 'fecha_fin_matricula_regular', 'fecha_fin_matricula_extemporanea']
+        for clave in claves_fecha:
+            valor = cambios.get(clave)
+            if valor is not None and getattr(valor, 'tzinfo', None):
+                cambios[clave] = valor.replace(tzinfo=None)
+
+        codigo_anterior = db_periodo.codigo
+        if 'codigo' in cambios and cambios['codigo'] is not None:
+            codigo_nuevo = cambios['codigo'].strip()
+            if not codigo_nuevo:
+                raise HTTPException(status_code=400, detail="El código del periodo no puede estar vacío")
+            if codigo_nuevo.lower() != (codigo_anterior or '').strip().lower():
+                duplicado = await db.execute(
+                    select(PeriodoAcademico.id).where(
+                        func.lower(PeriodoAcademico.codigo) == codigo_nuevo.lower(),
+                        PeriodoAcademico.id != periodo_id,
+                    )
+                )
+                if duplicado.scalar_one_or_none() is not None:
+                    raise HTTPException(status_code=409, detail=f"Ya existe otro periodo con el código '{codigo_nuevo}'.")
+            cambios['codigo'] = codigo_nuevo
+
+        fecha_inicio = cambios.get('fecha_inicio') or db_periodo.fecha_inicio
+        fecha_fin = cambios.get('fecha_fin') or db_periodo.fecha_fin
+        if not fecha_inicio or not fecha_fin:
+            raise HTTPException(status_code=400, detail="El periodo debe tener fecha de inicio y fecha fin")
+        if fecha_fin <= fecha_inicio:
+            raise HTTPException(status_code=400, detail="La fecha fin debe ser posterior a la fecha inicio")
+
+        for clave in ['fecha_fin_matricula_regular', 'fecha_fin_matricula_extemporanea']:
+            if clave in cambios and cambios[clave] is not None:
+                if cambios[clave] < fecha_inicio or cambios[clave] > fecha_fin:
+                    raise HTTPException(status_code=400, detail=f"{clave} debe estar dentro del rango del periodo")
+
+        for campo, valor in cambios.items():
+            if campo == 'codigo' and valor is None:
+                continue
+            setattr(db_periodo, campo, valor)
+
+        if 'codigo' in cambios and codigo_anterior != db_periodo.codigo:
+            db.add(OutboxEvent(
+                event_type="periodo.codigo_actualizado",
+                payload={
+                    "id": db_periodo.id,
+                    "codigo_anterior": codigo_anterior,
+                    "codigo_nuevo": db_periodo.codigo,
+                    "metadata": {"request_id": request.headers.get("X-Request-ID", "unknown")},
+                },
+            ))
+
+        await db.commit()
+        await db.refresh(db_periodo)
+        return db_periodo
+    except HTTPException:
+        await db.rollback()
+        raise
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=f"Ya existe otro periodo con el código '{db_periodo.codigo}'.") from exc
+    except Exception:
+        await db.rollback()
+        raise
 
 @router.get("/programas", response_model=List[ProgramaResponse])
 async def obtener_programas(request: Request, response: Response, db: AsyncSession = Depends(get_db)):
