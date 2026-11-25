@@ -16,9 +16,11 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import re
 import secrets
 import unicodedata
+from functools import wraps
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlparse
 from decimal import Decimal
@@ -36,6 +38,31 @@ from database import OutboxEvent, engine, get_db
 from models import ConceptoTupa, ConfiguracionCaja, Estudiante, PagoCaja
 
 router = APIRouter(prefix="/tesoreria")
+logger = logging.getLogger(__name__)
+
+
+def _proteger_tesoreria(operacion: str):
+    def decorador(func):
+        @wraps(func)
+        async def envoltorio(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            except HTTPException:
+                raise
+            except (ValueError, TypeError, KeyError, AttributeError) as exc:
+                logger.exception("Dato inválido al %s", operacion)
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No se pudo {operacion}: hay datos de tesorería inválidos o incompletos.",
+                ) from exc
+            except Exception:
+                logger.exception("Error inesperado al %s", operacion)
+                raise
+
+        return envoltorio
+
+    return decorador
+
 
 ANIO = 2026
 ZONA_PERU = timezone(timedelta(hours=-5))  # Perú no usa horario de verano
@@ -658,6 +685,7 @@ async def guardar_config(data: dict, db: AsyncSession = Depends(get_db)):
 # Recibos de caja
 # ---------------------------------------------------------------------------
 
+@_proteger_tesoreria("listar los pagos")
 @router.get("/pagos")
 async def listar_pagos(estudiante_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
     secreto = await secreto_qr(db)
@@ -669,6 +697,7 @@ async def listar_pagos(estudiante_id: Optional[int] = None, db: AsyncSession = D
     return [pago_dict(p, secreto, url_publica) for p in result.scalars().all()]
 
 
+@_proteger_tesoreria("registrar el pago")
 @router.post("/pagos", status_code=201)
 async def registrar_pago(data: PagoIn, request: Request, db: AsyncSession = Depends(get_db)):
     secreto = await secreto_qr(db)
@@ -728,6 +757,7 @@ async def registrar_pago(data: PagoIn, request: Request, db: AsyncSession = Depe
     return {"pago": pago_dict(pago, secreto, await url_publica_qr(db)), "pagoMatricula": bool(est.pago_matricula)}
 
 
+@_proteger_tesoreria("consultar el estado de cuenta")
 @router.get("/estudiantes/{estudiante_id}/estado-cuenta")
 async def estado_cuenta(estudiante_id: int, db: AsyncSession = Depends(get_db)):
     secreto = await secreto_qr(db)
@@ -940,6 +970,7 @@ async def _boletas_sinteticas(db: AsyncSession, secreto: bytes, dni: str, estudi
     return boletas
 
 
+@_proteger_tesoreria("consultar el pago")
 @router.get("/pagos/consultar")
 async def consultar_pago(codigo: Optional[str] = None, dni: Optional[str] = None, q: Optional[str] = None,
                          db: AsyncSession = Depends(get_db)):
@@ -960,6 +991,7 @@ async def consultar_pago(codigo: Optional[str] = None, dni: Optional[str] = None
     return {"valido": True, "recibo": recibo, "verificadoEn": formato_fecha_hora(ahora_peru())}
 
 
+@_proteger_tesoreria("validar el pago")
 @router.post("/pagos/validar")
 async def validar_pago(data: ValidarPagoIn, db: AsyncSession = Depends(get_db)):
     secreto = await secreto_qr(db)
@@ -984,6 +1016,7 @@ async def validar_pago(data: ValidarPagoIn, db: AsyncSession = Depends(get_db)):
     return {"valido": True, "recibo": recibo, "verificadoEn": formato_fecha_hora(ahora_peru())}
 
 
+@_proteger_tesoreria("listar las boletas disponibles")
 @router.get("/boletas-disponibles")
 async def listar_boletas_disponibles(dni: Optional[str] = None, q: Optional[str] = None, search: Optional[str] = None,
                                      concepto: Optional[str] = None, status: Optional[str] = None,
