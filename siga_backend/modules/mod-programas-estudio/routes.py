@@ -287,6 +287,59 @@ async def actualizar_periodo(periodo_id: int, periodo_data: PeriodoUpdate, reque
         await db.rollback()
         raise
 
+@router.delete("/periodos/{periodo_id}")
+async def eliminar_periodo(periodo_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    if not await _puede_editar_periodos(request, db):
+        raise HTTPException(status_code=403, detail="Permisos insuficientes. Se requiere mod-programas-estudio:write")
+
+    resultado = await db.execute(select(PeriodoAcademico).where(PeriodoAcademico.id == periodo_id))
+    db_periodo = resultado.scalar_one_or_none()
+    if not db_periodo:
+        raise HTTPException(status_code=404, detail="Periodo no encontrado")
+
+    codigo_eliminado = db_periodo.codigo
+    referencias = [
+        ("cargas lectivas", "SELECT COUNT(*) FROM carga_lectiva WHERE periodo_id = :pid"),
+        ("planes de trabajo", "SELECT COUNT(*) FROM planes_trabajo_docente WHERE periodo_id = :pid"),
+        ("tutorías", "SELECT COUNT(*) FROM tutorias WHERE periodo_id = :pid"),
+        ("horarios", "SELECT COUNT(*) FROM horarios_periodo WHERE periodo_id = :pid"),
+        ("matrículas", "SELECT COUNT(*) FROM matriculas WHERE periodo_id = :pid"),
+        ("registros de historial académico", "SELECT COUNT(*) FROM historial_academico WHERE periodo_id = :pid"),
+        ("beneficios estudiantiles", "SELECT COUNT(*) FROM beneficios_estudiante WHERE periodo_validez_inicio_id = :pid OR periodo_validez_fin_id = :pid"),
+        ("estudiantes por admisión", "SELECT COUNT(*) FROM estudiantes WHERE periodo_admision_id = :pid"),
+        ("registros de evaluación", "SELECT COUNT(*) FROM evaluacion_registros WHERE periodo_id = :pid"),
+    ]
+
+    try:
+        detalles = []
+        for etiqueta, consulta in referencias:
+            total = (await db.execute(text(consulta), {"pid": periodo_id})).scalar() or 0
+            if total:
+                detalles.append(f"{total} {etiqueta}")
+        if detalles:
+            raise HTTPException(
+                status_code=409,
+                detail=f"El periodo '{codigo_eliminado}' tiene {', '.join(detalles)}; no se puede eliminar",
+            )
+
+        db.add(OutboxEvent(
+            event_type="periodo.eliminado",
+            payload={
+                "id": db_periodo.id,
+                "codigo": codigo_eliminado,
+                "metadata": {"request_id": request.headers.get("X-Request-ID", "unknown")},
+            },
+        ))
+        await db.delete(db_periodo)
+        await db.commit()
+        return {"message": f"Periodo '{codigo_eliminado}' eliminado exitosamente"}
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+
 @router.get("/programas", response_model=List[ProgramaResponse])
 async def obtener_programas(request: Request, response: Response, db: AsyncSession = Depends(get_db)):
     ident = await get_identity(request, db)

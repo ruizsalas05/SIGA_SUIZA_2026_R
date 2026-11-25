@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { apiClient } from '../../core/api/client';
 import { useToast } from '../../core/ui/ToastContext';
-import { X, Lightbulb, Calendar, Plus, Clock, ArrowRight, Pencil, Save } from 'lucide-react';
+import { X, Lightbulb, Calendar, Plus, Clock, ArrowRight, Pencil, Save, Trash2 } from 'lucide-react';
 
 const periodoVacio = () => ({
   codigo: '',
@@ -21,6 +21,7 @@ export function PeriodManager({ onClose, onUpdate }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [formError, setFormError] = useState('');
+  const [deletingId, setDeletingId] = useState(null);
   const [newPeriod, setNewPeriod] = useState(periodoVacio);
 
   const fetchPeriods = async () => {
@@ -73,8 +74,14 @@ export function PeriodManager({ onClose, onUpdate }) {
         if (cambioRelevante) {
           const matriculas = await apiClient.callModule('mod-gestion-academica', 'matriculas/');
           const tieneMatriculas = Array.isArray(matriculas) && matriculas.some((matricula) => matricula.periodo_id === editingId);
-          if (tieneMatriculas && !window.confirm('Este periodo ya tiene matrículas asociadas. ¿Deseas continuar con el cambio?')) {
-            return;
+          if (tieneMatriculas) {
+            const continuar = await toast.confirm({
+              title: 'Periodo con matrículas',
+              message: 'Este periodo ya tiene matrículas asociadas. ¿Deseas continuar con el cambio?',
+              type: 'warning',
+              confirmText: 'Continuar'
+            });
+            if (!continuar) return;
           }
         }
         await apiClient.callModule('mod-programas-estudio', `periodos/${editingId}`, 'PUT', {
@@ -98,6 +105,31 @@ export function PeriodManager({ onClose, onUpdate }) {
       toast.error(mensaje);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleDelete = async (period) => {
+    const confirmado = await toast.confirm({
+      title: 'Eliminar periodo',
+      message: `¿Eliminar el periodo ${period.codigo}? Esta acción no se puede deshacer`,
+      type: 'danger',
+      confirmText: 'Sí, eliminar'
+    });
+    if (!confirmado) return;
+
+    try {
+      setDeletingId(period.id);
+      await apiClient.callModule('mod-programas-estudio', `periodos/${period.id}`, 'DELETE');
+      toast.success(`Periodo ${period.codigo} eliminado exitosamente`);
+      if (editingId === period.id) handleCancelEdit();
+      await fetchPeriods();
+      if (onUpdate) onUpdate();
+    } catch (error) {
+      const mensaje = error.message || 'Hubo un error al eliminar el periodo';
+      setFormError(mensaje);
+      toast.error(mensaje, 8000);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -366,6 +398,18 @@ export function PeriodManager({ onClose, onUpdate }) {
                           >
                             <Pencil size={13} />
                           </button>
+                          {!['matricula_abierta', 'en_curso'].includes(String(period.estado).toLowerCase()) && (
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(period)}
+                              disabled={deletingId === period.id}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                              aria-label={`Eliminar ${period.codigo}`}
+                              title="Eliminar periodo"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
