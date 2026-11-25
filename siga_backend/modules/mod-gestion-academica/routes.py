@@ -155,88 +155,104 @@ async def eliminar_foto(estudiante_id: int, request: Request, db: AsyncSession =
     return db_estudiante
 
 @router.post("/admision/ingesta", status_code=status.HTTP_202_ACCEPTED)
-async def ingesta_admitidos(request: Request, data: IngestaMasivaRequest, db: AsyncSession = Depends(get_db)):
-    periodo_admision_id = await _resolver_periodo_admision(data.proceso_admision_id, db)
-    if periodo_admision_id is not None and periodo_admision_id < 1:
-        raise HTTPException(status_code=400, detail="El periodo lectivo indicado no existe")
+async def ingesta_admitidos(
+    request: Request,
+    response: Response,
+    data: IngestaMasivaRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    import traceback
+    try:
+        periodo_admision_id = await _resolver_periodo_admision(data.proceso_admision_id, db)
+        if periodo_admision_id is not None and periodo_admision_id < 1:
+            periodo_admision_id = None
+            response.headers["X-Message"] = "No se encontró el periodo lectivo indicado."
 
-    estudiantes_creados = 0
-    estudiantes_asociados = 0
+        estudiantes_creados = 0
+        estudiantes_asociados = 0
 
-    for admitido in data.admitidos:
-        periodo_estudiante = await _resolver_periodo_estudiantes(admitido.periodo_id, db)
-        if periodo_estudiante is not None and periodo_estudiante < 1:
-            raise HTTPException(status_code=400, detail="El periodo lectivo indicado no existe")
-        if periodo_estudiante is None:
-            periodo_estudiante = periodo_admision_id
+        for admitido in data.admitidos:
+            periodo_estudiante = await _resolver_periodo_estudiantes(admitido.periodo_id, db)
+            if periodo_estudiante is None or periodo_estudiante < 1:
+                periodo_estudiante = periodo_admision_id
 
-        fecha_nacimiento = None
-        if admitido.fecha_nacimiento:
-            try:
-                fecha_nacimiento = date.fromisoformat(str(admitido.fecha_nacimiento)[:10])
-            except ValueError:
-                pass
+            fecha_nacimiento = None
+            if admitido.fecha_nacimiento:
+                try:
+                    fecha_nacimiento = date.fromisoformat(str(admitido.fecha_nacimiento)[:10])
+                except ValueError:
+                    pass
 
-        metadata = dict(admitido.metadata_completa or {})
-        if periodo_estudiante is not None:
-            metadata["periodo_admision_id"] = periodo_estudiante
+            metadata = dict(admitido.metadata_completa or {})
+            if periodo_estudiante is not None:
+                metadata["periodo_admision_id"] = periodo_estudiante
 
-        resultado = await db.execute(select(Estudiante).where(Estudiante.dni == admitido.dni))
-        db_estudiante = resultado.scalar_one_or_none()
+            resultado = await db.execute(select(Estudiante).where(Estudiante.dni == admitido.dni))
+            db_estudiante = resultado.scalar_one_or_none()
 
-        if db_estudiante:
-            db_estudiante.periodo_admision_id = periodo_estudiante
-            db_estudiante.metadata_admision = {**(db_estudiante.metadata_admision or {}), **metadata}
-            estudiantes_asociados += 1
-            continue
+            if db_estudiante:
+                db_estudiante.periodo_admision_id = periodo_estudiante
+                db_estudiante.metadata_admision = {**(db_estudiante.metadata_admision or {}), **metadata}
+                estudiantes_asociados += 1
+                continue
 
-        codigo_estudiante = f"{datetime.now().year}-{admitido.dni}"
-        db_estudiante = Estudiante(
-            codigo_estudiante=codigo_estudiante,
-            dni=admitido.dni,
-            nombres=admitido.nombres,
-            apellidos=admitido.apellidos,
-            fecha_nacimiento=fecha_nacimiento,
-            programa_id=admitido.programa_id,
-            celular=admitido.celular,
-            email_personal=admitido.email_personal,
-            estado_academico="postulante",
-            modalidad_admision=admitido.modalidad,
-            metadata_admision=metadata,
-            periodo_admision_id=periodo_estudiante,
-        )
-        db.add(db_estudiante)
-        await db.flush()
+            codigo_estudiante = f"{datetime.now().year}-{admitido.dni}"
+            db_estudiante = Estudiante(
+                codigo_estudiante=codigo_estudiante,
+                dni=admitido.dni,
+                nombres=admitido.nombres,
+                apellidos=admitido.apellidos,
+                fecha_nacimiento=fecha_nacimiento,
+                programa_id=admitido.programa_id,
+                celular=admitido.celular,
+                email_personal=admitido.email_personal,
+                estado_academico="postulante",
+                modalidad_admision=admitido.modalidad,
+                metadata_admision=metadata,
+                periodo_admision_id=periodo_estudiante,
+            )
+            db.add(db_estudiante)
+            await db.flush()
 
-        codigo_periodo = await _codigo_periodo_estudiantes(periodo_estudiante, db)
-        proceso_admision = f"ADM-{codigo_periodo}" if codigo_periodo else data.proceso_admision_id
-        event_payload = {
-            "event_id": str(uuid.uuid4()),
-            "event_type": "gestion_academica.admision.estudiante_ingresado",
-            "source": "mod-gestion-academica",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "version": "1.0.0",
-            "data": {
-                "estudiante_id": db_estudiante.id,
-                "dni": db_estudiante.dni,
-                "nombres": db_estudiante.nombres,
-                "apellidos": db_estudiante.apellidos,
-                "programa_id": admitido.programa_id,
-                "periodo_id": periodo_estudiante,
-                "proceso_admision_id": proceso_admision,
-            },
-            "metadata": {"request_id": request.headers.get("X-Request-ID", "unknown")},
+            codigo_periodo = await _codigo_periodo_estudiantes(periodo_estudiante, db)
+            proceso_admision = f"ADM-{codigo_periodo}" if codigo_periodo else data.proceso_admision_id
+            event_payload = {
+                "event_id": str(uuid.uuid4()),
+                "event_type": "gestion_academica.admision.estudiante_ingresado",
+                "source": "mod-gestion-academica",
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "version": "1.0.0",
+                "data": {
+                    "estudiante_id": db_estudiante.id,
+                    "dni": db_estudiante.dni,
+                    "nombres": db_estudiante.nombres,
+                    "apellidos": db_estudiante.apellidos,
+                    "programa_id": admitido.programa_id,
+                    "periodo_id": periodo_estudiante,
+                    "proceso_admision_id": proceso_admision,
+                },
+                "metadata": {"request_id": request.headers.get("X-Request-ID", "unknown")},
+            }
+            db.add(OutboxEvent(event_type=event_payload["event_type"], payload=event_payload))
+            estudiantes_creados += 1
+
+        await db.commit()
+        return {
+            "message": "Ingesta procesada",
+            "estudiantes_creados": estudiantes_creados,
+            "estudiantes_asociados": estudiantes_asociados,
+            "periodo_id": periodo_admision_id,
         }
-        db.add(OutboxEvent(event_type=event_payload["event_type"], payload=event_payload))
-        estudiantes_creados += 1
-
-    await db.commit()
-    return {
-        "message": "Ingesta procesada",
-        "estudiantes_creados": estudiantes_creados,
-        "estudiantes_asociados": estudiantes_asociados,
-        "periodo_id": periodo_admision_id,
-    }
+    except Exception as e:
+        await db.rollback()
+        print(f"[ERROR] ingesta_admitidos: {e}\n{traceback.format_exc()}")
+        response.headers["X-Message"] = "No se pudo completar la sincronización desde Admisión."
+        return {
+            "message": "Ingesta no completada",
+            "estudiantes_creados": 0,
+            "estudiantes_asociados": 0,
+            "periodo_id": None,
+        }
 
 @router.post("/estudiantes/", response_model=EstudianteResponse, status_code=status.HTTP_201_CREATED)
 async def crear_estudiante(request: Request, data: EstudianteCreate, db: AsyncSession = Depends(get_db)):
