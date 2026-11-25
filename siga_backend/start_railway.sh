@@ -1,6 +1,10 @@
 #!/bin/sh
 set -e
 
+# Los módulos se ejecutan desde su propio directorio; esto hace importable shared/.
+APP_DIR=$(cd "$(dirname "$0")" && pwd)
+export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
 # Normaliza la URL de PostgreSQL que entrega Railway.
 if [ -n "$DATABASE_URL" ]; then
     case "$DATABASE_URL" in
