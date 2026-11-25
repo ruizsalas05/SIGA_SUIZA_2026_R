@@ -86,10 +86,11 @@ class AuthService:
                 "id": user.id,
                 "email": user.email,
                 "full_name": user.full_name,
-                "role": primary_role,
-                "roles": role_list,
-                "permissions": permissions,
-                "programa_id": programa_id
+            "role": primary_role,
+            "roles": role_list,
+            "permissions": permissions,
+            "must_change_password": bool(user.must_change_password),
+            "programa_id": programa_id
             }
         }
     
@@ -136,6 +137,7 @@ class AuthService:
             "roles": role_list,
             "permissions": permissions,
             "is_superuser": user.is_superuser,
+            "must_change_password": bool(user.must_change_password),
             "programa_id": programa_id
         }
 
@@ -149,5 +151,6 @@ class AuthService:
             return {"success": False, "error": "La contraseña actual es incorrecta"}
         
         user.hashed_password = self._hash_password(new_password)
+        user.must_change_password = False
         await self.user_repo.db.commit()
         return {"success": True}

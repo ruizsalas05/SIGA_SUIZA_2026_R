@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Table, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Table, ForeignKey, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
@@ -28,6 +28,7 @@ class CoreUser(Base):
     full_name = Column(String)
     hashed_password = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
+    must_change_password = Column(Boolean, nullable=False, server_default=text('false'), default=False)
     is_superuser = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

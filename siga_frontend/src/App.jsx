@@ -18,7 +18,7 @@ import { CoordinatorAcademic } from './modules/academic/CoordinatorAcademic';
 import { useState } from 'react';
 
 function AppContent() {
-  const { isAuthenticated, loading, user } = useAuth();
+  const { isAuthenticated, loading, user, mustChangePassword } = useAuth();
   const [currentView, setCurrentView] = useState(null);
   const [prevUser, setPrevUser] = useState(user);
 
@@ -67,6 +67,17 @@ function AppContent() {
 
   if (!isAuthenticated) {
     return <LoginForm />;
+  }
+
+  if (mustChangePassword) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="text-center px-6">
+          <h1 className="text-xl font-bold text-navy mb-2">Actualización de contraseña requerida</h1>
+          <p className="text-sm text-navy/70">Completa el cambio de contraseña para acceder al sistema.</p>
+        </div>
+      </div>
+    );
   }
 
   const renderView = () => {

@@ -58,18 +58,28 @@ async def get_db():
         finally:
             await db.close()
 
-async def ensure_schema():
-    """Añade de forma idempotente las columnas del proceso de matrícula.
+async def _backfill_periodo_admision(conn):
+    try:
+        async with conn.begin_nested():
+            await conn.execute(text("""
+                UPDATE estudiantes e
+                SET periodo_admision_id = p.id
+                FROM outbox_events oe, periodos_academicos p
+                WHERE e.periodo_admision_id IS NULL
+                  AND oe.event_type = 'gestion_academica.admision.estudiante_ingresado'
+                  AND (oe.payload->'data'->>'estudiante_id')::int = e.id
+                  AND p.codigo = replace(oe.payload->>'proceso_admision_id', 'ADM-', '')
+            """))
+    except Exception as exc:
+        print(f"  • backfill periodo_admision_id skipped: {exc}")
 
-    ``Base.metadata.create_all`` crea tablas nuevas pero NO altera tablas
-    existentes, por lo que las columnas agregadas al motor de matrícula se
-    aplican aquí con ``ADD COLUMN IF NOT EXISTS`` (no destructivo).
-    """
-    from sqlalchemy import text
 
+async def ensure_schema(conn=None):
     sentencias = [
         "ALTER TABLE estudiantes ADD COLUMN IF NOT EXISTS plan_estudios_id INTEGER",
         "ALTER TABLE estudiantes ADD COLUMN IF NOT EXISTS ciclo_actual INTEGER DEFAULT 1",
+        "ALTER TABLE estudiantes ADD COLUMN IF NOT EXISTS periodo_admision_id INTEGER",
+        "CREATE INDEX IF NOT EXISTS ix_estudiantes_periodo_admision_id ON estudiantes (periodo_admision_id)",
         "ALTER TABLE matriculas ADD COLUMN IF NOT EXISTS ciclo INTEGER",
         "ALTER TABLE matriculas ADD COLUMN IF NOT EXISTS casuistica VARCHAR(50)",
         "ALTER TABLE matriculas ADD COLUMN IF NOT EXISTS boleta_codigo VARCHAR(64)",
@@ -77,19 +87,27 @@ async def ensure_schema():
         "ALTER TABLE matriculas ADD COLUMN IF NOT EXISTS consolidada BOOLEAN DEFAULT FALSE",
         "ALTER TABLE matriculas ADD COLUMN IF NOT EXISTS registro_academico VARCHAR(50)",
     ]
-    async with engine.begin() as conn:
+
+    async def aplicar(connection):
         for sentencia in sentencias:
-            await conn.execute(text(sentencia))
+            await connection.execute(text(sentencia))
+        await _backfill_periodo_admision(connection)
+
+    if conn is None:
+        async with engine.begin() as connection:
+            await aplicar(connection)
+    else:
+        await aplicar(conn)
     print("Esquema de matrícula verificado/actualizado")
 
 
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Migración seguro para BDs existentes: ampliar foto_url a TEXT
-        # (permite guardar la foto del estudiante como data-URL base64)
         try:
-            await conn.execute(text("ALTER TABLE estudiantes ALTER COLUMN foto_url TYPE TEXT"))
+            async with conn.begin_nested():
+                await conn.execute(text("ALTER TABLE estudiantes ALTER COLUMN foto_url TYPE TEXT"))
         except Exception as exc:
             print(f"  • foto_url (TEXT) check skipped: {exc}")
+        await ensure_schema(conn)
     print("Tablas creadas/verificadas")

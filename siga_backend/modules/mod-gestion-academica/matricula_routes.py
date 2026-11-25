@@ -39,6 +39,7 @@ from domain import (
 from enrollment_engine import construir_propuesta, evaluar_ventana_matricula
 from enrollment_service import cargar_historial, construir_contexto
 from intermodule import fetch_cargaLectiva, fetch_malla, fetch_programa, fetch_periodo
+from shared.student_accounts import asegurar_cuenta_estudiante
 from models import (
     BeneficioEstudiante,
     ConvalidacionDetalle,
@@ -428,6 +429,8 @@ async def matricular_ingresantes(
         est.estado_academico = "matriculado"
         est.ciclo_actual = propuesta.ciclo_sugerido
 
+        estado_cuenta = await asegurar_cuenta_estudiante(db, est)
+
         publicar(db, "gestion_academica.matricula.confirmada", {
             "matricula_id": matricula.id, "estudiante_id": est.id,
             "ciclo": propuesta.ciclo_sugerido, "casuistica": propuesta.casuistica,
@@ -441,6 +444,7 @@ async def matricular_ingresantes(
             "codigo_estudiante": est.codigo_estudiante,
             "ciclo": propuesta.ciclo_sugerido,
             "unidades": len(unidades),
+            "cuenta_estado": estado_cuenta["cuenta"],
         })
 
     await db.commit()

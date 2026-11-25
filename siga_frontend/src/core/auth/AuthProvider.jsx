@@ -20,6 +20,9 @@ export function AuthProvider({ children }) {
           const userData = await apiClient.getCurrentUser();
           setUser(userData);
           setPermissions(userData.permissions || []);
+          if (userData?.must_change_password) {
+            setIsPasswordModalOpen(true);
+          }
         } catch {
           apiClient.clearToken();
         } finally {
@@ -40,6 +43,9 @@ export function AuthProvider({ children }) {
         apiClient.setToken(result.access_token);
         setUser(result.user);
         setPermissions(result.user.permissions || []);
+        if (result.user?.must_change_password) {
+          setIsPasswordModalOpen(true);
+        }
         return { success: true, user: result.user };
       }
       return { success: false, error: 'Credenciales inválidas' };
@@ -67,6 +73,7 @@ export function AuthProvider({ children }) {
     logout,
     hasPermission,
     isAuthenticated: !!user,
+    mustChangePassword: !!user?.must_change_password,
     openPasswordModal,
     closePasswordModal,
     isPasswordModalOpen

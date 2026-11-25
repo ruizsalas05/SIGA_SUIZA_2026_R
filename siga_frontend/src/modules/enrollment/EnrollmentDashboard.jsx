@@ -30,7 +30,35 @@ export function EnrollmentDashboard() {
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPrograma, setCurrentPrograma] = useState('ALL');
+  const [programas, setProgramas] = useState([]);
 
+  useEffect(() => {
+    let activo = true;
+    const cargarProgramas = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/mod-programas-estudio/programas`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const activos = (Array.isArray(data) ? data : []).filter(
+          p => String(p.estado || '').toLowerCase() === 'activo'
+        );
+        if (activo) {
+          setProgramas(activos);
+          if (userRole === 'secretaria_programa') {
+            const programaUser = activos.find(p => String(p.id) === String(user?.programa_id));
+            if (programaUser) setCurrentPrograma(prev => prev === 'ALL' ? String(programaUser.id) : prev);
+          }
+        }
+      } catch (e) {
+        console.error('No se pudieron cargar los programas de estudio:', e);
+        if (activo) setProgramas([]);
+      }
+    };
+    cargarProgramas();
+    return () => { activo = false; };
+  }, [userRole, user?.programa_id]);
 
   const fetchStudents = async (searchVal = searchTerm) => {
     setLoading(true);
@@ -63,17 +91,10 @@ export function EnrollmentDashboard() {
   };
 
   useEffect(() => {
-    if (userRole !== 'invitado') {
-      if (userRole === 'secretaria_programa' && currentPrograma === 'ALL') {
-        const fallbackId = user?.email === 'secretaria_prog@siga.edu' ? '2' : '1';
-        setCurrentPrograma(user?.programa_id ? String(user.programa_id) : fallbackId);
-      } else {
-        fetchStudents();
-      }
-    }
+    if (userRole !== 'invitado') fetchStudents();
     // Solo debe re-ejecutarse al cambiar de programa o rol (no en cada tecla del buscador).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPrograma, userRole]);
+  }, [currentPrograma, userRole, programas]);
 
   const handleEnrollClick = (student) => {
     setSelectedStudent(student);
@@ -221,12 +242,9 @@ export function EnrollmentDashboard() {
             }}
           >
             <option value="ALL">Todos los Programas</option>
-            <option value="1">Arquitectura de Plat.</option>
-            <option value="2">Enfermería Técnica</option>
-            <option value="3">Diseño Gráfico</option>
-            <option value="4">Administración</option>
-            <option value="5">Contabilidad</option>
-            <option value="6">Mecatrónica</option>
+            {programas.map(p => (
+              <option key={p.id} value={p.id}>{p.nombre}</option>
+            ))}
           </select>
         )}
         <span className="px-4 text-slate-400 text-xl">🔍</span>

@@ -4,7 +4,7 @@ import { useAuth } from './useAuth';
 import { KeyRound, X, CheckCircle2, Lock, AlertCircle, Eye, EyeOff, ShieldCheck } from 'lucide-react';
 
 export function ChangePasswordModal({ isOpen, onClose }) {
-  const { logout } = useAuth();
+  const { logout, mustChangePassword } = useAuth();
   const [formData, setFormData] = useState({
     old_password: '',
     new_password: '',
@@ -21,7 +21,7 @@ export function ChangePasswordModal({ isOpen, onClose }) {
   if (!isOpen) return null;
 
   const handleClose = () => {
-    if (!loading) {
+    if (!loading && !mustChangePassword) {
       setFormData({ old_password: '', new_password: '', confirm_password: '' });
       setError(null);
       setSuccess(false);
@@ -63,7 +63,7 @@ export function ChangePasswordModal({ isOpen, onClose }) {
 
       setSuccess(true);
       setTimeout(() => {
-        handleClose();
+        onClose();
         logout(); // Cerrar sesión para que ingrese con su nueva clave
       }, 2500);
     } catch (err) {
@@ -87,7 +87,7 @@ export function ChangePasswordModal({ isOpen, onClose }) {
               <p className="text-xs text-white/80">Configuración de seguridad de tu cuenta</p>
             </div>
           </div>
-          {!success && (
+          {!success && !mustChangePassword && (
             <button 
               onClick={handleClose} 
               className="p-1.5 rounded-full hover:bg-white/20 text-white/80 hover:text-white transition-all cursor-pointer"
@@ -109,7 +109,7 @@ export function ChangePasswordModal({ isOpen, onClose }) {
               Tu contraseña institucional ha sido modificada con éxito. Por seguridad, deberás iniciar sesión con tu nueva clave.
             </p>
             <button
-              onClick={() => { handleClose(); logout(); }}
+              onClick={() => { onClose(); logout(); }}
               className="btn-primary w-full py-2.5 text-sm font-bold"
             >
               Iniciar sesión ahora

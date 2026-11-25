@@ -54,6 +54,9 @@ class SecurityMiddleware:
                 if not user:
                     raise HTTPException(status_code=401, detail="Token inválido o expirado")
 
+                if user.get("must_change_password"):
+                    raise HTTPException(status_code=403, detail="Debes cambiar tu contraseña antes de usar el sistema")
+
                 # Verificar permisos para rutas de módulos
                 if request.url.path.startswith("/api/"):
                     module_name = request.url.path.split("/")[2]  # /api/{module_name}/...

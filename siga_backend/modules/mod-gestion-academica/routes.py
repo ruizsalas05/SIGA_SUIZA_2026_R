@@ -8,6 +8,7 @@ from models import Estudiante, Matricula, MatriculaDetalle
 from schemas import EstudianteCreate, EstudianteResponse, EstudianteUpdate, MatriculaCreate, MatriculaResponse, IngestaMasivaRequest
 from domain import EstadoMatricula
 from shared.identity import Identity, get_identity, es_superadmin
+from shared.student_accounts import asegurar_cuenta_estudiante
 from datetime import date, datetime
 from typing import List, Optional, Tuple
 from pathlib import Path
@@ -835,11 +836,17 @@ async def realizar_matricula(request: Request, data: MatriculaCreate, db: AsyncS
         select(Matricula).where(
             Matricula.estudiante_id == data.estudiante_id,
             Matricula.periodo_id == data.periodo_id,
-            Matricula.estado_matricula != 'anulado'
+            Matricula.estado_matricula.notin_(list(EstadoMatricula.anuladas()))
         )
     )
     if existing.scalars().first():
         raise HTTPException(status_code=400, detail="El estudiante ya cuenta con una matrícula registrada para este periodo académico.")
+
+    estudiante = (
+        await db.execute(select(Estudiante).where(Estudiante.id == data.estudiante_id))
+    ).scalar_one_or_none()
+    if not estudiante:
+        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
 
     # Validar créditos
     total_creditos = sum(d.creditos for d in data.detalles)
@@ -855,7 +862,9 @@ async def realizar_matricula(request: Request, data: MatriculaCreate, db: AsyncS
     for det in data.detalles:
         db_detalle = MatriculaDetalle(matricula_id=db_matricula.id, **det.model_dump())
         db.add(db_detalle)
-    
+
+    estado_cuenta = await asegurar_cuenta_estudiante(db, estudiante)
+
     event_payload = {
         "event_id": str(uuid.uuid4()),
         "event_type": "gestion_academica.matricula.confirmada",
@@ -870,7 +879,9 @@ async def realizar_matricula(request: Request, data: MatriculaCreate, db: AsyncS
     await db.commit()
     
     result = await db.execute(select(Matricula).options(selectinload(Matricula.detalles)).where(Matricula.id == db_matricula.id))
-    return result.scalar_one()
+    matricula_creada = result.scalar_one()
+    matricula_creada.cuenta_estado = estado_cuenta["cuenta"]
+    return matricula_creada
 
 @router.get("/matriculas/", response_model=List[MatriculaResponse])
 async def obtener_matriculas(db: AsyncSession = Depends(get_db)):
@@ -899,6 +910,7 @@ async def obtener_estudiantes_por_unidad(unidad_id: int, periodo_id: int, db: As
     for est, det_id in rows:
         est_dict = EstudianteResponse.model_validate(est).model_dump()
         est_dict["matricula_detalle_id"] = det_id
+        est_dict["cuenta_estado"] = getattr(est, "cuenta_estado", None)
         response.append(est_dict)
         
     return response
@@ -938,7 +950,10 @@ async def sincronizar_estudiantes_seccion(unidad_id: int, periodo_id: int, reque
         
     for est in estudiantes:
         res_mat = await db.execute(
-            select(Matricula).where(Matricula.estudiante_id == est.id).where(Matricula.periodo_id == periodo_id)
+            select(Matricula)
+            .where(Matricula.estudiante_id == est.id)
+            .where(Matricula.periodo_id == periodo_id)
+            .where(Matricula.estado_matricula.notin_(list(EstadoMatricula.anuladas())))
         )
         db_mat = res_mat.scalar_one_or_none()
         if not db_mat:
@@ -953,7 +968,10 @@ async def sincronizar_estudiantes_seccion(unidad_id: int, periodo_id: int, reque
             )
             db.add(db_mat)
             await db.flush()
-            
+
+            estado_cuenta = await asegurar_cuenta_estudiante(db, est)
+            est.cuenta_estado = estado_cuenta["cuenta"]
+
         res_det = await db.execute(
             select(MatriculaDetalle)
             .where(MatriculaDetalle.matricula_id == db_mat.id)

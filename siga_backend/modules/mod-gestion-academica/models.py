@@ -1,10 +1,15 @@
-from sqlalchemy import Column, JSON, String, Integer, Date, Boolean, Text, Float, ForeignKey, TIMESTAMP, Numeric, func
+from sqlalchemy import Column, JSON, String, Integer, Date, Boolean, Text, Float, ForeignKey, TIMESTAMP, Numeric, func, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database import BaseModel
 
 class Estudiante(BaseModel):
     __tablename__ = "estudiantes"
+    __table_args__ = (
+        Index('ix_estudiantes_usuario_id', 'usuario_id'),
+        UniqueConstraint('usuario_id', name='uq_estudiantes_usuario_id'),
+    )
 
+    usuario_id = Column(Integer, ForeignKey("core_users.id", ondelete="SET NULL"), nullable=True)
     codigo_estudiante = Column(String(20), unique=True, index=True, nullable=False)
     dni = Column(String(15), unique=True, index=True, nullable=False)
     nombres = Column(String(100), nullable=False)

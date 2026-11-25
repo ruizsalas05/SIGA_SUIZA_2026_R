@@ -30,6 +30,7 @@ export function EnrollmentProcess({ initialStudent, onCancel }) {
   const [consolidando, setConsolidando] = useState(false);
 
   const [cachedStudents, setCachedStudents] = useState([]);
+  const [programas, setProgramas] = useState([]);
 
   // 1. Buscar Estudiante Maestro Optimizado (Caché en cliente para búsqueda instantánea)
   const searchStudent = async (val) => {
@@ -67,9 +68,12 @@ export function EnrollmentProcess({ initialStudent, onCancel }) {
         apiClient.request('/api/mod-programas-estudio/programas').catch(()=>[]),
         apiClient.callModule('mod-programas-estudio', 'periodos').catch(()=>[])
       ]);
-      const fetchedPrograms = Array.isArray(pRes) ? pRes : [];
+      const fetchedPrograms = (Array.isArray(pRes) ? pRes : []).filter(
+        p => String(p.estado || '').toLowerCase() === 'activo'
+      );
       const fetchedPeriods = Array.isArray(peRes) ? peRes : [];
-      
+      setProgramas(fetchedPrograms);
+
       console.log("Academic Data Loaded:", {fetchedPrograms, fetchedPeriods, initialStudent});
       
       const activePeriod = getDefaultPeriod(fetchedPeriods);
@@ -81,7 +85,7 @@ export function EnrollmentProcess({ initialStudent, onCancel }) {
         const studentProgram = fetchedPrograms.find(p => p.id === initialStudent.programa_id || String(p.id) === String(initialStudent.programa_id));
         setSelection(prev => ({
           ...prev,
-          program: studentProgram || fetchedPrograms[0] || null,
+          program: studentProgram || null,
           period: activePeriod,
           tipo: defaultTipo
         }));
@@ -100,6 +104,11 @@ export function EnrollmentProcess({ initialStudent, onCancel }) {
   }, [initialStudent]);
 
   const loadMallaAndContinue = async () => {
+    if (!selection.program || !programas.some(p => String(p.id) === String(selection.program.id))) {
+      toast.error('No hay un programa de estudio activo válido seleccionado. No se puede continuar con la matrícula.');
+      return;
+    }
+
     // 0. Validar Pago Financiero
     if (selection.student && !selection.student.pago_matricula) {
       toast.error("MATRÍCULA BLOQUEADA: El estudiante registra deuda pendiente. Debe realizar el pago físico en Caja/Tesorería antes de proceder.");
@@ -206,6 +215,10 @@ export function EnrollmentProcess({ initialStudent, onCancel }) {
   const bloqueadasMap = new Map((propuesta?.bloqueadas || []).map(u => [u.unidad_didactica_id, u.motivo]));
 
   const handleEnroll = async () => {
+    if (!selection.program || !programas.some(p => String(p.id) === String(selection.program.id))) {
+      toast.error('No hay un programa de estudio activo válido seleccionado. No se puede matricular.');
+      return;
+    }
     setLoading(true);
     try {
       // Filtrar los IDs seleccionados (excluyendo bloqueadas).
@@ -405,6 +418,11 @@ export function EnrollmentProcess({ initialStudent, onCancel }) {
                   )}
                 </div>
               </div>
+              {!selection.program && (
+                <div className="mb-6 bg-amber-50 text-amber-800 text-sm p-4 rounded-xl border border-amber-200">
+                  No hay un programa de estudio activo válido para este estudiante. No se puede continuar con la matrícula.
+                </div>
+              )}
               <div className="mt-auto pt-6 border-t border-slate-200/50 flex gap-4">
                 {!initialStudent && (
                   <button className="px-6 py-2.5 font-semibold text-slate-500 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors" onClick={() => setStep(1)}>Volver</button>

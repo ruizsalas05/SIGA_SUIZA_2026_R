@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text
+from sqlalchemy import select, func, text, bindparam
 from typing import List, Optional
 from datetime import datetime, date, timezone
 from zoneinfo import ZoneInfo
@@ -15,6 +15,8 @@ from schemas import (
 from shared.identity import (
     Identity, get_identity, es_superadmin, es_coordinador_de, es_docente_de_carga
 )
+from shared.matricula_estados import estados_matricula_anuladas
+from shared.student_accounts import asegurar_cuenta_estudiante
 
 router = APIRouter()
 
@@ -1361,7 +1363,7 @@ async def sincronizar_nomina_seccion(unidad_id: int, periodo_id: int, request: R
     
     # Buscar estudiantes que pertenezcan estrictamente al programa Y al ciclo de la unidad
     res_est = await db.execute(
-        text("SELECT id, dni, nombres, apellidos FROM estudiantes WHERE programa_id = :pid AND ciclo_actual = :ciclo ORDER BY apellidos, nombres"),
+        text("SELECT id, dni, nombres, apellidos, email_institucional, email_personal FROM estudiantes WHERE programa_id = :pid AND ciclo_actual = :ciclo ORDER BY apellidos, nombres"),
         {"pid": prog_id, "ciclo": ciclo}
     )
     estudiantes = res_est.fetchall()
@@ -1370,15 +1372,23 @@ async def sincronizar_nomina_seccion(unidad_id: int, periodo_id: int, request: R
         return {
             "status": "warning", 
             "message": f"No hay estudiantes registrados en el Ciclo {ciclo} para el curso '{unidad_nombre}'.",
-            "count": 0
+            "count": 0,
+            "cuentas": []
         }
-        
+
+    estados_anuladas = sorted(estados_matricula_anuladas())
+    cuentas = []
     for est in estudiantes:
         est_id = est[0]
         # Verificar o crear matrícula del estudiante en el periodo para su ciclo correspondiente
         res_mat = await db.execute(
-            text("SELECT id FROM matriculas WHERE estudiante_id = :eid AND periodo_id = :pid"),
-            {"eid": est_id, "pid": periodo_id}
+            text("""
+                SELECT id FROM matriculas
+                WHERE estudiante_id = :eid
+                  AND periodo_id = :pid
+                  AND estado_matricula NOT IN :anuladas
+            """).bindparams(bindparam("anuladas", expanding=True)),
+            {"eid": est_id, "pid": periodo_id, "anuladas": estados_anuladas}
         )
         row_mat = res_mat.fetchone()
         if not row_mat:
@@ -1388,6 +1398,18 @@ async def sincronizar_nomina_seccion(unidad_id: int, periodo_id: int, request: R
                 RETURNING id
             """), {"eid": est_id, "prid": prog_id, "pid": periodo_id, "ciclo": ciclo})
             mat_id = res_ins_mat.fetchone()[0]
+            estado_cuenta = await asegurar_cuenta_estudiante(db, {
+                "id": est_id,
+                "dni": est[1],
+                "nombres": est[2],
+                "apellidos": est[3],
+                "email_institucional": est[4],
+                "email_personal": est[5],
+            })
+            cuentas.append({
+                "estudiante_id": est_id,
+                "cuenta_estado": estado_cuenta["cuenta"],
+            })
         else:
             mat_id = row_mat[0]
             
@@ -1420,5 +1442,5 @@ async def sincronizar_nomina_seccion(unidad_id: int, periodo_id: int, request: R
             db.add(db_reg)
             
     await db.commit()
-    return {"status": "ok", "message": f"Sincronizados {len(estudiantes)} estudiantes del Ciclo {ciclo} para {unidad_nombre}", "count": len(estudiantes)}
+    return {"status": "ok", "message": f"Sincronizados {len(estudiantes)} estudiantes del Ciclo {ciclo} para {unidad_nombre}", "count": len(estudiantes), "cuentas": cuentas}
 

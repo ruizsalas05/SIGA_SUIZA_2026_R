@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { apiClient, API_BASE } from '../../core/api/client';
 
 export default function ExtraordinaryEnrollmentModal({ isOpen, onClose, onSuccess, currentPrograma, userRole }) {
@@ -7,23 +7,55 @@ export default function ExtraordinaryEnrollmentModal({ isOpen, onClose, onSucces
     nombres: '',
     apellidos: '',
     codigo_estudiante: '',
-    programa_id: currentPrograma === 'ALL' ? '1' : currentPrograma
+    programa_id: ''
   });
+  const [programas, setProgramas] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let activo = true;
+    const cargarProgramas = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/mod-programas-estudio/programas`, {
+          headers: { 'Authorization': `Bearer ${apiClient.token}` }
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const activos = (Array.isArray(data) ? data : []).filter(
+          p => String(p.estado || '').toLowerCase() === 'activo'
+        );
+        if (activo) {
+          setProgramas(activos);
+          const inicial = activos.find(p => String(p.id) === String(currentPrograma));
+          if (inicial) setFormData(prev => ({ ...prev, programa_id: String(inicial.id) }));
+        }
+      } catch (e) {
+        console.error('No se pudieron cargar los programas de estudio:', e);
+        if (activo) setProgramas([]);
+      }
+    };
+    cargarProgramas();
+    return () => { activo = false; };
+  }, [currentPrograma]);
 
   if (!isOpen) return null;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setLoading(true);
     setError(null);
+    const programaValido = programas.find(p => String(p.id) === String(formData.programa_id));
+    if (!programaValido) {
+      setError('Seleccione un programa de estudio activo válido para continuar.');
+      return;
+    }
+    setLoading(true);
 
     try {
       // 1. Create the student
       const studentPayload = {
         ...formData,
-        programa_id: parseInt(formData.programa_id),
+        programa_id: parseInt(programaValido.id, 10),
         modalidad_admision: 'MIGRACION_HISTORICA',
         estado_academico: 'estudiante'
       };
@@ -151,13 +183,14 @@ export default function ExtraordinaryEnrollmentModal({ isOpen, onClose, onSucces
                 value={formData.programa_id}
                 onChange={e => setFormData({...formData, programa_id: e.target.value})}
               >
-                <option value="1">Arquitectura de Plataformas y Servicios T.I.</option>
-                <option value="2">Enfermería Técnica</option>
-                <option value="3">Diseño Gráfico</option>
-                <option value="4">Administración</option>
-                <option value="5">Contabilidad</option>
-                <option value="6">Mecatrónica</option>
+                <option value="">Seleccione un programa activo</option>
+                {programas.map(p => (
+                  <option key={p.id} value={p.id}>{p.nombre}</option>
+                ))}
               </select>
+              {programas.length === 0 && (
+                <p className="mt-2 text-xs font-medium text-red-600">No hay programas activos disponibles. No se puede continuar.</p>
+              )}
             </div>
           )}
 

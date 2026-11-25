@@ -10,6 +10,8 @@ al motor de reglas descrito en:
 """
 from enum import Enum
 
+from shared.matricula_estados import estados_matricula_anuladas
+
 
 class EstadoMatricula(str, Enum):
     """Ciclo de vida de una matrícula."""
@@ -22,7 +24,7 @@ class EstadoMatricula(str, Enum):
     @classmethod
     def anuladas(cls):
         """Estados que NO cuentan como una matrícula vigente."""
-        return {cls.ANULADA.value, cls.ANULADA_POR_RESERVA.value}
+        return estados_matricula_anuladas()
 
 
 class EstadoCurso(str, Enum):
