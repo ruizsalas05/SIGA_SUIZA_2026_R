@@ -1,14 +1,14 @@
 from fastapi import APIRouter, HTTPException, Depends, status, Request, Response, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, text
+from sqlalchemy import and_, select, or_, text
 from sqlalchemy.orm import selectinload
 from database import get_db, OutboxEvent
 from models import Estudiante, Matricula, MatriculaDetalle
 from schemas import EstudianteCreate, EstudianteResponse, EstudianteUpdate, MatriculaCreate, MatriculaResponse, IngestaMasivaRequest
 from domain import EstadoMatricula
 from shared.identity import Identity, get_identity, es_superadmin
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional, Tuple
 from pathlib import Path
 import uuid
@@ -39,6 +39,23 @@ async def _resolver_periodo_estudiantes(valor: Optional[str], db: AsyncSession) 
     )
     periodo_id = resultado.scalar_one_or_none()
     return periodo_id if periodo_id is not None else -1
+
+
+async def _codigo_periodo_estudiantes(periodo_id: Optional[int], db: AsyncSession) -> Optional[str]:
+    if not periodo_id or periodo_id < 1:
+        return None
+    resultado = await db.execute(
+        text("SELECT codigo FROM periodos_academicos WHERE id = :id"),
+        {"id": periodo_id},
+    )
+    return resultado.scalar_one_or_none()
+
+
+async def _resolver_periodo_admision(valor: Optional[str], db: AsyncSession) -> Optional[int]:
+    texto = str(valor or "").strip()
+    if texto.upper().startswith("ADM-"):
+        texto = texto[4:]
+    return await _resolver_periodo_estudiantes(texto, db)
 
 
 FOTO_DIR = Path(__file__).resolve().parent / "uploads" / "fotos"
@@ -139,39 +156,60 @@ async def eliminar_foto(estudiante_id: int, request: Request, db: AsyncSession =
 
 @router.post("/admision/ingesta", status_code=status.HTTP_202_ACCEPTED)
 async def ingesta_admitidos(request: Request, data: IngestaMasivaRequest, db: AsyncSession = Depends(get_db)):
-    """
-    Endpoint para ingestar de forma masiva (PUSH) los admitidos desde la App Externa de Admisión.
-    Crea los expedientes de estudiantes y dispara eventos para integrarlos al ecosistema (crear usuarios, matricular, etc).
-    """
+    periodo_admision_id = await _resolver_periodo_admision(data.proceso_admision_id, db)
+    if periodo_admision_id is not None and periodo_admision_id < 1:
+        raise HTTPException(status_code=400, detail="El periodo lectivo indicado no existe")
+
     estudiantes_creados = 0
-    
+    estudiantes_asociados = 0
+
     for admitido in data.admitidos:
-        # 1. Capa Anticorrupción: Validar si ya existe
-        existing = await db.execute(select(Estudiante).where(Estudiante.dni == admitido.dni))
-        if existing.scalar_one_or_none():
-            continue # Ya existe, saltamos
-            
-        # Generar código universitario estándar
-        year = datetime.now().year
-        codigo = f"{year}-{admitido.dni}"
-        
-        # 2. Crear Estudiante
+        periodo_estudiante = await _resolver_periodo_estudiantes(admitido.periodo_id, db)
+        if periodo_estudiante is not None and periodo_estudiante < 1:
+            raise HTTPException(status_code=400, detail="El periodo lectivo indicado no existe")
+        if periodo_estudiante is None:
+            periodo_estudiante = periodo_admision_id
+
+        fecha_nacimiento = None
+        if admitido.fecha_nacimiento:
+            try:
+                fecha_nacimiento = date.fromisoformat(str(admitido.fecha_nacimiento)[:10])
+            except ValueError:
+                pass
+
+        metadata = dict(admitido.metadata_completa or {})
+        if periodo_estudiante is not None:
+            metadata["periodo_admision_id"] = periodo_estudiante
+
+        resultado = await db.execute(select(Estudiante).where(Estudiante.dni == admitido.dni))
+        db_estudiante = resultado.scalar_one_or_none()
+
+        if db_estudiante:
+            db_estudiante.periodo_admision_id = periodo_estudiante
+            db_estudiante.metadata_admision = {**(db_estudiante.metadata_admision or {}), **metadata}
+            estudiantes_asociados += 1
+            continue
+
+        codigo_estudiante = f"{datetime.now().year}-{admitido.dni}"
         db_estudiante = Estudiante(
-            codigo_estudiante=codigo,
+            codigo_estudiante=codigo_estudiante,
             dni=admitido.dni,
             nombres=admitido.nombres,
             apellidos=admitido.apellidos,
+            fecha_nacimiento=fecha_nacimiento,
             programa_id=admitido.programa_id,
             celular=admitido.celular,
             email_personal=admitido.email_personal,
+            estado_academico="postulante",
             modalidad_admision=admitido.modalidad,
-            metadata_admision=admitido.metadata_completa
+            metadata_admision=metadata,
+            periodo_admision_id=periodo_estudiante,
         )
         db.add(db_estudiante)
-        await db.flush() # para obtener el ID
-        
-        # 3. Disparar evento para matricular en Ciclo I automáticamente
-        # y para que mod-usuarios le cree su cuenta
+        await db.flush()
+
+        codigo_periodo = await _codigo_periodo_estudiantes(periodo_estudiante, db)
+        proceso_admision = f"ADM-{codigo_periodo}" if codigo_periodo else data.proceso_admision_id
         event_payload = {
             "event_id": str(uuid.uuid4()),
             "event_type": "gestion_academica.admision.estudiante_ingresado",
@@ -184,17 +222,21 @@ async def ingesta_admitidos(request: Request, data: IngestaMasivaRequest, db: As
                 "nombres": db_estudiante.nombres,
                 "apellidos": db_estudiante.apellidos,
                 "programa_id": admitido.programa_id,
-                "periodo_id": admitido.periodo_id,
-                "proceso_admision_id": data.proceso_admision_id
+                "periodo_id": periodo_estudiante,
+                "proceso_admision_id": proceso_admision,
             },
-            "metadata": {"request_id": request.headers.get("X-Request-ID", "unknown")}
+            "metadata": {"request_id": request.headers.get("X-Request-ID", "unknown")},
         }
-        
         db.add(OutboxEvent(event_type=event_payload["event_type"], payload=event_payload))
         estudiantes_creados += 1
-        
+
     await db.commit()
-    return {"message": "Ingesta procesada", "estudiantes_creados": estudiantes_creados}
+    return {
+        "message": "Ingesta procesada",
+        "estudiantes_creados": estudiantes_creados,
+        "estudiantes_asociados": estudiantes_asociados,
+        "periodo_id": periodo_admision_id,
+    }
 
 @router.post("/estudiantes/", response_model=EstudianteResponse, status_code=status.HTTP_201_CREATED)
 async def crear_estudiante(request: Request, data: EstudianteCreate, db: AsyncSession = Depends(get_db)):
@@ -272,7 +314,12 @@ async def obtener_estudiantes(
             )
             if programa_id is not None:
                 matricula_periodo = matricula_periodo.where(Matricula.programa_id == programa_id)
-            query = query.where(matricula_periodo.exists())
+
+            admision_periodo = Estudiante.periodo_admision_id == periodo_id
+            if programa_id is not None:
+                admision_periodo = and_(admision_periodo, Estudiante.programa_id == programa_id)
+
+            query = query.where(or_(matricula_periodo.exists(), admision_periodo))
         else:
             if programa_id is not None:
                 query = query.where(Estudiante.programa_id == programa_id)
@@ -308,6 +355,7 @@ async def obtener_estudiantes(
                 "fecha_limite_documentos": r.fecha_limite_documentos.isoformat() if r.fecha_limite_documentos else None,
                 "modalidad_admision": r.modalidad_admision,
                 "metadata_admision": r.metadata_admision or {},
+                "periodo_admision_id": r.periodo_admision_id,
             }
             for r in rows
         ]

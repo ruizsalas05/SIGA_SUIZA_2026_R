@@ -646,7 +646,7 @@ export function StudentMaster() {
     setLoading(true);
     try {
       const periodoParam = encodeURIComponent(periodo);
-      let url = `${API_BASE}/api/mod-gestion-academica/estudiantes/?solo_matriculados=true&periodo_id=${periodoParam}&periodo_lectivo_id=${periodoParam}`;
+      let url = `${API_BASE}/api/mod-gestion-academica/estudiantes/?periodo_id=${periodoParam}&periodo_lectivo_id=${periodoParam}`;
 
       if (programa && programa !== 'ALL') {
         url += `&programa_id=${encodeURIComponent(programa)}`;
@@ -1057,17 +1057,30 @@ export function StudentMaster() {
       confirmText: 'Sí, sincronizar'
     });
     if (!ok) return;
+
+    const periodoId = currentPeriodo || currentPeriodoRef.current;
+    if (!periodoId) {
+      toast.error("Seleccione un periodo lectivo antes de sincronizar.");
+      return;
+    }
+
+    const periodoSeleccionado = periodos.find(p => String(p.id) === String(periodoId));
+    const periodoCodigo = periodoSeleccionado?.codigo || String(periodoId);
     setLoading(true);
     try {
-      // via gateway, do not puncture the module directly
       const resAdmision = await fetch(`${API_BASE}/api/mod-admision/admitidos`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
 
       if (!resAdmision.ok) throw new Error("No se pudo conectar con Admisión Piloto");
-      let admisionData = await resAdmision.json();
+      const admisionData = await resAdmision.json();
 
-      if (admisionData.admitidos.length === 0) {
+      const admitidos = (admisionData.admitidos || []).map(admitido => ({
+        ...admitido,
+        periodo_id: periodoId
+      }));
+
+      if (admitidos.length === 0) {
         toast.info("No se encontraron ingresantes para el programa seleccionado.");
         setLoading(false);
         return;
@@ -1079,12 +1092,17 @@ export function StudentMaster() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
-        body: JSON.stringify(admisionData)
+        body: JSON.stringify({
+          proceso_admision_id: `ADM-${periodoCodigo}`,
+          admitidos
+        })
       });
 
       if (resIngesta.ok) {
         const result = await resIngesta.json();
-        toast.success(`Sincronización exitosa. ${result.estudiantes_creados} nuevos estudiantes ingresados al Core.`);
+        toast.success(
+          `Sincronización exitosa para ${periodoCodigo}: ${result.estudiantes_creados || 0} nuevos estudiantes y ${result.estudiantes_asociados || 0} existentes asociados al periodo.`
+        );
         handleSearch('');
       } else {
         const err = await resIngesta.text();

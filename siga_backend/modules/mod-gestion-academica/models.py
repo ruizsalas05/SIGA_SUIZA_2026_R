@@ -23,6 +23,7 @@ class Estudiante(BaseModel):
     fecha_limite_documentos = Column(TIMESTAMP)
     modalidad_admision = Column(String(100), default="ORDINARIO")
     metadata_admision = Column(JSON, default={})
+    periodo_admision_id = Column(Integer, index=True)
     # Proceso de matrícula (sección 2: alumnos históricos; sección 3: ciclo)
     plan_estudios_id = Column(Integer, index=True)  # Plan de ORIGEN (históricos)
     ciclo_actual = Column(Integer, default=1)

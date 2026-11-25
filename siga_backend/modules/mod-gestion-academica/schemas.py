@@ -88,7 +88,7 @@ class IngestaAdmitido(BaseModel):
     nombres: str
     apellidos: str
     programa_id: int
-    periodo_id: Optional[int] = 1
+    periodo_id: Optional[str] = None
     celular: Optional[str] = None
     email_personal: Optional[str] = None
     fecha_nacimiento: Optional[str] = None
