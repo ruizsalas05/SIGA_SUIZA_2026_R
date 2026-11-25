@@ -64,7 +64,7 @@ export function PaymentModal({
 
   const selectedConcept = available.find(c => c.id === selectedConceptId) || available[0] || null;
   const selectedTarifa = selectedConcept
-    ? selectedConcept.tarifas.find(t => t.id === selectedTarifaId) || selectedConcept.tarifas[0]
+    ? selectedConcept.tarifas?.find(t => t.id === selectedTarifaId) || selectedConcept.tarifas?.[0] || null
     : null;
   const careerName = CAREERS_MAP[student.programa_id] || 'Programa de Estudio General';
 
@@ -72,8 +72,8 @@ export function PaymentModal({
   const monto = !selectedConcept
     ? 0
     : isLibre
-      ? (montoLibre === '' ? selectedConcept.monto : parseFloat(montoLibre) || 0)
-      : selectedTarifa.monto;
+      ? (montoLibre === '' ? Number(selectedConcept.monto) || 0 : parseFloat(montoLibre) || 0)
+      : Number(selectedTarifa?.monto ?? selectedConcept.monto) || 0;
   const efectivoNum = parseFloat(montoEfectivoRecibido) || 0;
   const vuelto = selectedMethodId === 'efectivo' && efectivoNum >= monto ? (efectivoNum - monto).toFixed(2) : '0.00';
 
@@ -141,8 +141,8 @@ export function PaymentModal({
       const result = await tesoreriaApi.registrarPago({
         estudianteId: student.id,
         conceptoId: selectedConcept.id,
-        tarifaId: selectedConcept.tipoPrecio === 'tarifas' ? selectedTarifa.id : null,
-        monto: isLibre ? Math.round(monto * 100) / 100 : null,
+        tarifaId: selectedTarifa?.id || null,
+        monto: Math.round(monto * 100) / 100,
         metodoPagoId: selectedMethodId,
         numeroOperacion: numeroOperacion.trim(),
         cajero: cashierName || 'Caja Central',

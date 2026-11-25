@@ -4,23 +4,31 @@ import { API_BASE } from '../../../core/api/client';
 const BASE = `${API_BASE}/api/mod-gestion-academica/tesoreria`;
 
 async function request(path, { method = 'GET', body } = {}) {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem('token')}`,
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  let data = null;
+  let res;
   try {
-    data = await res.json();
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('token')}`,
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
   } catch {
-    data = null;
+    throw new Error('No se pudo conectar con Tesorería. Verifica la conexión e inténtalo nuevamente.');
   }
+  const data = await res.json().catch(() => null);
   if (!res.ok) {
-    const detail = typeof data?.detail === 'string' ? data.detail : null;
-    throw new Error(detail || `Error ${res.status} en Tesorería`);
+    const detalleBruto = data?.detail;
+    const detalle = typeof detalleBruto === 'string'
+      ? detalleBruto
+      : Array.isArray(detalleBruto)
+        ? detalleBruto.map(d => d?.msg || d?.detail || String(d)).filter(Boolean).join('; ')
+        : null;
+    const mensaje = res.status >= 500
+      ? 'El servidor de Tesorería no pudo procesar la solicitud. Inténtalo nuevamente.'
+      : (detalle || `Error ${res.status} en Tesorería`);
+    throw new Error(mensaje);
   }
   return data;
 }

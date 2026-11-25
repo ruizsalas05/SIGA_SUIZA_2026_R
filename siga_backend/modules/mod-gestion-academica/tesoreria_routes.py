@@ -122,7 +122,7 @@ class PagoIn(BaseModel):
     estudianteId: int
     conceptoId: int
     tarifaId: Optional[str] = None
-    monto: Optional[float] = None          # Solo para conceptos de monto libre
+    monto: Optional[float] = None          # Validado contra el tarifario cuando viene del cajero
     metodoPagoId: str
     numeroOperacion: Optional[str] = ""
     cajero: Optional[str] = None
@@ -202,11 +202,16 @@ async def secreto_qr(db: AsyncSession) -> bytes:
     if _secreto_cache:
         return _secreto_cache
     fila = await obtener_config(db, "qr_secreto")
-    if not fila:
-        fila = ConfiguracionCaja(clave="qr_secreto", valor={"clave": secrets.token_hex(32)})
-        db.add(fila)
+    valor = fila.valor if fila and isinstance(fila.valor, dict) else {}
+    clave = valor.get("clave")
+    if not isinstance(clave, str) or not clave:
+        clave = secrets.token_hex(32)
+        if fila:
+            fila.valor = {**valor, "clave": clave}
+        else:
+            db.add(ConfiguracionCaja(clave="qr_secreto", valor={"clave": clave}))
         await db.commit()
-    _secreto_cache = fila.valor["clave"].encode()
+    _secreto_cache = clave.encode()
     return _secreto_cache
 
 
@@ -217,14 +222,22 @@ async def clave_sello(db: AsyncSession) -> ec.EllipticCurvePrivateKey:
     if _clave_ec_cache:
         return _clave_ec_cache
     fila = await obtener_config(db, "qr_sello_ec")
-    if not fila:
+    valor = fila.valor if fila and isinstance(fila.valor, dict) else {}
+    pem = valor.get("pem")
+    try:
+        if not isinstance(pem, str) or not pem:
+            raise ValueError("PEM faltante")
+        _clave_ec_cache = serialization.load_pem_private_key(pem.encode(), password=None)
+    except (TypeError, ValueError):
         nueva = ec.generate_private_key(ec.SECP256R1())
         pem = nueva.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                   serialization.NoEncryption()).decode()
-        fila = ConfiguracionCaja(clave="qr_sello_ec", valor={"pem": pem})
-        db.add(fila)
+        if fila:
+            fila.valor = {**valor, "pem": pem}
+        else:
+            db.add(ConfiguracionCaja(clave="qr_sello_ec", valor={"pem": pem}))
         await db.commit()
-    _clave_ec_cache = serialization.load_pem_private_key(fila.valor["pem"].encode(), password=None)
+        _clave_ec_cache = nueva
     return _clave_ec_cache
 
 
@@ -288,8 +301,8 @@ def es_url_publica(url: str) -> bool:
 
 async def url_publica_qr(db: AsyncSession) -> Optional[str]:
     fila = await obtener_config(db, "caja")
-    url = ((fila.valor or {}).get("urlPublica") if fila else "") or ""
-    url = url.strip().rstrip("/")
+    valor = fila.valor if fila and isinstance(fila.valor, dict) else {}
+    url = str(valor.get("urlPublica") or "").strip().rstrip("/")
     return url if es_url_publica(url) else None
 
 
@@ -383,8 +396,18 @@ def texto_qr_estado_cuenta(estado: dict, emitido: str, url_publica: Optional[str
 
 
 def concepto_dict(c: ConceptoTupa) -> dict:
-    tarifas = [{"id": t.get("id") or f"T{i + 1}", "nombre": t.get("nombre") or "General", "monto": float(t.get("monto") or 0)}
-               for i, t in enumerate(c.tarifas or [])] or [{"id": "T1", "nombre": "General", "monto": 0.0}]
+    tarifas = []
+    crudas = c.tarifas if isinstance(c.tarifas, list) else []
+    for i, t in enumerate(crudas):
+        if not isinstance(t, dict):
+            continue
+        try:
+            monto = round(float(t.get("monto") or 0), 2)
+        except (TypeError, ValueError):
+            continue
+        tarifas.append({"id": t.get("id") or f"T{i + 1}", "nombre": t.get("nombre") or "General", "monto": monto})
+    if not tarifas:
+        tarifas = [{"id": "T1", "nombre": "General", "monto": 0.0}]
     return {
         "id": c.id,
         "codigo": c.codigo,
@@ -663,7 +686,8 @@ async def restaurar_conceptos(db: AsyncSession = Depends(get_db)):
 @router.get("/config")
 async def leer_config(db: AsyncSession = Depends(get_db)):
     fila = await obtener_config(db, "caja")
-    return {**CONFIG_CAJA_DEFECTO, **(fila.valor if fila else {})}
+    valor = fila.valor if fila and isinstance(fila.valor, dict) else {}
+    return {**CONFIG_CAJA_DEFECTO, **valor}
 
 
 @router.put("/config")
@@ -685,8 +709,8 @@ async def guardar_config(data: dict, db: AsyncSession = Depends(get_db)):
 # Recibos de caja
 # ---------------------------------------------------------------------------
 
-@_proteger_tesoreria("listar los pagos")
 @router.get("/pagos")
+@_proteger_tesoreria("listar los pagos")
 async def listar_pagos(estudiante_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
     secreto = await secreto_qr(db)
     stmt = select(PagoCaja).where(PagoCaja.estado == "PAGADO").order_by(PagoCaja.fecha_pago.desc(), PagoCaja.id.desc())
@@ -697,68 +721,82 @@ async def listar_pagos(estudiante_id: Optional[int] = None, db: AsyncSession = D
     return [pago_dict(p, secreto, url_publica) for p in result.scalars().all()]
 
 
-@_proteger_tesoreria("registrar el pago")
 @router.post("/pagos", status_code=201)
+@_proteger_tesoreria("registrar el pago")
 async def registrar_pago(data: PagoIn, request: Request, db: AsyncSession = Depends(get_db)):
-    secreto = await secreto_qr(db)
-    est = await estudiante_o_404(db, data.estudianteId)
-    concepto = (await db.execute(select(ConceptoTupa).where(ConceptoTupa.id == data.conceptoId, ConceptoTupa.activo.is_(True)))).scalar_one_or_none()
-    if not concepto:
-        raise HTTPException(404, detail="El concepto ya no existe en el tarifario TUPA.")
+    try:
+        secreto = await secreto_qr(db)
+        est = await estudiante_o_404(db, data.estudianteId)
+        concepto = (await db.execute(select(ConceptoTupa).where(ConceptoTupa.id == data.conceptoId, ConceptoTupa.activo.is_(True)))).scalar_one_or_none()
+        if not concepto:
+            raise HTTPException(404, detail="El concepto ya no existe en el tarifario TUPA.")
 
-    if data.metodoPagoId not in METODOS_PAGO:
-        raise HTTPException(400, detail="Método de pago inválido.")
-    numero_operacion = (data.numeroOperacion or "").strip()
-    if data.metodoPagoId != "efectivo" and not numero_operacion:
-        raise HTTPException(400, detail="Ingresa el N° de operación o referencia del pago.")
+        if data.metodoPagoId not in METODOS_PAGO:
+            raise HTTPException(400, detail="Método de pago inválido.")
+        numero_operacion = (data.numeroOperacion or "").strip()
+        if data.metodoPagoId != "efectivo" and not numero_operacion:
+            raise HTTPException(400, detail="Ingresa el N° de operación o referencia del pago.")
 
-    # Reglas de cobro (validadas también aquí, no solo en la pantalla)
-    if concepto.libera_matricula and est.pago_matricula:
-        raise HTTPException(409, detail="El alumno ya tiene la matrícula pagada; no tiene deuda de matrícula.")
-    if not concepto.libera_matricula and not concepto.permite_repetir:
-        ya_pagado = (await db.execute(select(PagoCaja.id).where(
-            PagoCaja.estudiante_id == est.id, PagoCaja.estado == "PAGADO",
-            func.upper(PagoCaja.concepto_codigo) == concepto.codigo.upper()))).first()
-        if ya_pagado:
-            raise HTTPException(409, detail=f"El alumno ya pagó {concepto.codigo}. Marca el concepto como repetible si se cobra más de una vez.")
+        # Reglas de cobro (validadas también aquí, no solo en la pantalla)
+        if concepto.libera_matricula and est.pago_matricula:
+            raise HTTPException(409, detail="El alumno ya tiene la matrícula pagada; no tiene deuda de matrícula.")
+        if not concepto.libera_matricula and not concepto.permite_repetir:
+            ya_pagado = (await db.execute(select(PagoCaja.id).where(
+                PagoCaja.estudiante_id == est.id, PagoCaja.estado == "PAGADO",
+                func.upper(PagoCaja.concepto_codigo) == concepto.codigo.upper()))).first()
+            if ya_pagado:
+                raise HTTPException(409, detail=f"El alumno ya pagó {concepto.codigo}. Marca el concepto como repetible si se cobra más de una vez.")
 
-    info = concepto_dict(concepto)
-    if concepto.tipo_precio == "libre":
-        monto = round(float(data.monto or 0), 2)
-        if monto <= 0 or monto < info["montoMinimo"]:
-            raise HTTPException(400, detail=f"Monto inválido (mínimo S/ {info['montoMinimo']:.2f}).")
-        tarifa_nombre = "Monto libre"
-    else:
-        tarifa = next((t for t in info["tarifas"] if t["id"] == data.tarifaId), None) if concepto.tipo_precio == "tarifas" else None
-        tarifa = tarifa or info["tarifas"][0]
-        monto, tarifa_nombre = tarifa["monto"], tarifa["nombre"]
+        info = concepto_dict(concepto)
+        if concepto.tipo_precio == "libre":
+            monto = round(float(data.monto or 0), 2)
+            if monto <= 0 or monto < info["montoMinimo"]:
+                raise HTTPException(400, detail=f"Monto inválido (mínimo S/ {info['montoMinimo']:.2f}).")
+            tarifa_nombre = "Monto libre"
+        else:
+            tarifa = next((t for t in info["tarifas"] if t["id"] == data.tarifaId), None) if data.tarifaId else None
+            tarifa = tarifa or info["tarifas"][0]
+            monto, tarifa_nombre = tarifa["monto"], tarifa["nombre"]
+            if monto <= 0:
+                raise HTTPException(400, detail="El tarifario no tiene un precio válido para este concepto.")
+            if data.monto is not None:
+                try:
+                    monto_enviado = round(float(data.monto), 2)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, detail="El monto enviado no es válido.") from None
+                if abs(monto_enviado - monto) > 0.01:
+                    raise HTTPException(400, detail=f"El monto enviado (S/ {monto_enviado:.2f}) no coincide con el tarifario (S/ {monto:.2f}).")
 
-    pago = PagoCaja(
-        codigo_recibo=await siguiente_codigo_recibo(db),
-        estudiante_id=est.id, dni=est.dni, estudiante_nombre=f"{est.nombres} {est.apellidos}",
-        codigo_estudiante=est.codigo_estudiante, carrera_nombre=data.carreraNombre,
-        concepto_id=concepto.id, concepto_codigo=concepto.codigo, concepto_nombre=concepto.nombre,
-        concepto_categoria=concepto.categoria, tipo_precio=concepto.tipo_precio, tarifa_nombre=tarifa_nombre,
-        monto=monto, metodo_pago_id=data.metodoPagoId, metodo_pago_nombre=METODOS_PAGO[data.metodoPagoId],
-        numero_operacion=numero_operacion or ("PAGO EN VENTANILLA" if data.metodoPagoId == "efectivo" else ""),
-        cajero=(data.cajero or request.headers.get("X-User-Email") or "Caja Central")[:150],
-        registrado_por=request.headers.get("X-User-Email"), observaciones=(data.observaciones or "").strip(),
-        libera_matricula=bool(concepto.libera_matricula), estado="PAGADO", fecha_pago=ahora_peru(),
-    )
-    db.add(pago)
-    if concepto.libera_matricula:
-        est.pago_matricula = True  # Libera el bloqueo de matrícula en la misma transacción
-    publicar_evento(db, "tesoreria.pago.registrado", {
-        "codigo_recibo": pago.codigo_recibo, "estudiante_id": est.id, "dni": est.dni,
-        "concepto": concepto.codigo, "monto": monto, "libera_matricula": bool(concepto.libera_matricula),
-    }, request)
-    await db.commit()
-    await db.refresh(pago)
-    return {"pago": pago_dict(pago, secreto, await url_publica_qr(db)), "pagoMatricula": bool(est.pago_matricula)}
+        pago = PagoCaja(
+            codigo_recibo=await siguiente_codigo_recibo(db),
+            estudiante_id=est.id, dni=est.dni, estudiante_nombre=f"{est.nombres} {est.apellidos}",
+            codigo_estudiante=est.codigo_estudiante, carrera_nombre=data.carreraNombre,
+            concepto_id=concepto.id, concepto_codigo=concepto.codigo, concepto_nombre=concepto.nombre,
+            concepto_categoria=concepto.categoria, tipo_precio=concepto.tipo_precio, tarifa_nombre=tarifa_nombre,
+            monto=monto, metodo_pago_id=data.metodoPagoId, metodo_pago_nombre=METODOS_PAGO[data.metodoPagoId],
+            numero_operacion=numero_operacion or ("PAGO EN VENTANILLA" if data.metodoPagoId == "efectivo" else ""),
+            cajero=(data.cajero or request.headers.get("X-User-Email") or "Caja Central")[:150],
+            registrado_por=request.headers.get("X-User-Email"), observaciones=(data.observaciones or "").strip(),
+            libera_matricula=bool(concepto.libera_matricula), estado="PAGADO", fecha_pago=ahora_peru(),
+        )
+        db.add(pago)
+        if concepto.libera_matricula:
+            est.pago_matricula = True  # Libera el bloqueo de matrícula en la misma transacción
+        publicar_evento(db, "tesoreria.pago.registrado", {
+            "codigo_recibo": pago.codigo_recibo, "estudiante_id": est.id, "dni": est.dni,
+            "concepto": concepto.codigo, "monto": monto, "libera_matricula": bool(concepto.libera_matricula),
+        }, request)
+        await db.flush()
+        respuesta = {"pago": pago_dict(pago, secreto, await url_publica_qr(db)), "pagoMatricula": bool(est.pago_matricula)}
+        await db.commit()
+        return respuesta
+    except Exception:
+        await db.rollback()
+        raise
 
 
-@_proteger_tesoreria("consultar el estado de cuenta")
 @router.get("/estudiantes/{estudiante_id}/estado-cuenta")
+@_proteger_tesoreria("consultar el estado de cuenta")
 async def estado_cuenta(estudiante_id: int, db: AsyncSession = Depends(get_db)):
     secreto = await secreto_qr(db)
     est = await estudiante_o_404(db, estudiante_id)
@@ -970,8 +1008,8 @@ async def _boletas_sinteticas(db: AsyncSession, secreto: bytes, dni: str, estudi
     return boletas
 
 
-@_proteger_tesoreria("consultar el pago")
 @router.get("/pagos/consultar")
+@_proteger_tesoreria("consultar el pago")
 async def consultar_pago(codigo: Optional[str] = None, dni: Optional[str] = None, q: Optional[str] = None,
                          db: AsyncSession = Depends(get_db)):
     secreto = await secreto_qr(db)
@@ -991,8 +1029,8 @@ async def consultar_pago(codigo: Optional[str] = None, dni: Optional[str] = None
     return {"valido": True, "recibo": recibo, "verificadoEn": formato_fecha_hora(ahora_peru())}
 
 
-@_proteger_tesoreria("validar el pago")
 @router.post("/pagos/validar")
+@_proteger_tesoreria("validar el pago")
 async def validar_pago(data: ValidarPagoIn, db: AsyncSession = Depends(get_db)):
     secreto = await secreto_qr(db)
     info = _resolver_codigo_qr(data.codigo or data.qrCode or data.qr_code or "")
@@ -1016,8 +1054,8 @@ async def validar_pago(data: ValidarPagoIn, db: AsyncSession = Depends(get_db)):
     return {"valido": True, "recibo": recibo, "verificadoEn": formato_fecha_hora(ahora_peru())}
 
 
-@_proteger_tesoreria("listar las boletas disponibles")
 @router.get("/boletas-disponibles")
+@_proteger_tesoreria("listar las boletas disponibles")
 async def listar_boletas_disponibles(dni: Optional[str] = None, q: Optional[str] = None, search: Optional[str] = None,
                                      concepto: Optional[str] = None, status: Optional[str] = None,
                                      estudiante_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
