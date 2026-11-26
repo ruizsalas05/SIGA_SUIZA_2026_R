@@ -44,6 +44,8 @@ if _is_test:
     _engine_kwargs["echo"] = False
 else:
     _engine_kwargs["echo"] = True
+    _engine_kwargs["pool_pre_ping"] = True
+    _engine_kwargs["pool_recycle"] = 300
 
 engine = create_async_engine(DATABASE_URL, **_engine_kwargs)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
