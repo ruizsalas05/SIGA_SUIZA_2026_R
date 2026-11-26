@@ -23,7 +23,6 @@ import unicodedata
 from functools import wraps
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlparse
-from decimal import Decimal
 from typing import List, Optional
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -155,11 +154,34 @@ def ahora_peru() -> datetime:
 
 
 def a_float(valor) -> float:
-    return float(valor) if isinstance(valor, Decimal) else float(valor or 0)
+    try:
+        return round(float(valor), 2) if valor not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def a_int(valor, default: int = 0) -> int:
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return default
+
+
+def _meta_valor(meta, *claves: str):
+    if not isinstance(meta, dict):
+        return None
+    for clave in claves:
+        if clave in meta:
+            return meta[clave]
+    objetivo = {re.sub(r"[^A-Z0-9]", "", _normalizar_texto(clave)) for clave in claves}
+    for clave, valor in meta.items():
+        if re.sub(r"[^A-Z0-9]", "", _normalizar_texto(clave)) in objetivo:
+            return valor
+    return None
 
 
 def formato_fecha_hora(fecha: Optional[datetime]) -> str:
-    return fecha.strftime("%d/%m/%Y, %H:%M:%S") if fecha else ""
+    return fecha.strftime("%d/%m/%Y, %H:%M:%S") if isinstance(fecha, datetime) else ""
 
 
 def parse_fecha_recibo(texto: str, timestamp_ms=None) -> datetime:
@@ -447,7 +469,7 @@ def pago_dict(p: PagoCaja, secreto: bytes, url_publica: Optional[str] = None) ->
         "liberaMatricula": bool(p.libera_matricula),
         "estado": p.estado,
         "fechaHora": formato_fecha_hora(p.fecha_pago),
-        "timestamp": int(p.fecha_pago.replace(tzinfo=ZONA_PERU).timestamp() * 1000) if p.fecha_pago else None,
+        "timestamp": int(p.fecha_pago.replace(tzinfo=ZONA_PERU).timestamp() * 1000) if isinstance(p.fecha_pago, datetime) else None,
         "origen": "caja",
         "token": firmar(secreto, p.codigo_recibo, p.dni),
     }
@@ -497,30 +519,47 @@ async def siguiente_codigo_recibo(db: AsyncSession) -> str:
     return f"{prefijo}{(max(numeros) if numeros else 0) + 1:05d}"
 
 
+async def _nombre_programa(db: AsyncSession, programa_id) -> str:
+    if programa_id is None:
+        return "Sin programa asignado"
+    try:
+        fila = (await db.execute(
+            text("SELECT nombre FROM programas_estudio WHERE id = :pid"),
+            {"pid": programa_id},
+        )).first()
+    except Exception:
+        return "Sin programa asignado"
+    return str(fila[0]).strip() if fila and fila[0] else "Sin programa asignado"
+
+
 async def construir_estado_cuenta(db: AsyncSession, est: Estudiante, secreto: bytes) -> dict:
     """Movimientos del año: admisión, recibos de caja y la matrícula (pagada o pendiente)."""
     conceptos = await conceptos_activos(db)
     mat = concepto_matricula(conceptos)
     url_publica = await url_publica_qr(db)
+    nombre_programa = await _nombre_programa(db, est.programa_id)
     nombre = f"{est.nombres} {est.apellidos}"
-    meta = est.metadata_admision or {}
+    meta = est.metadata_admision if isinstance(est.metadata_admision, dict) else {}
     movimientos = []
 
     # 1. Derecho de admisión (registrado por la Comisión de Admisión)
     fecha_adm = "04/04/2026"
-    try:
-        if meta.get("Fecha de inscripcion:"):
-            fecha_adm = datetime.fromisoformat(str(meta["Fecha de inscripcion:"])).strftime("%d/%m/%Y")
-    except ValueError:
-        pass
-    codigo_meta = str(meta.get("CODIGO") or "").strip()
-    codigo_adm = f"ADM-{ANIO}-{int(codigo_meta) if codigo_meta.isdigit() else est.id * 7 % 900 + 100:05d}"
-    modalidad = est.modalidad_admision or meta.get("MODALIDAD (EBR O EBA)") or "ORDINARIO"
+    fecha_meta = _meta_valor(meta, "Fecha de inscripcion:", "Fecha de inscripcion")
+    if fecha_meta:
+        try:
+            fecha_adm = datetime.fromisoformat(str(fecha_meta)).strftime("%d/%m/%Y")
+        except (TypeError, ValueError):
+            pass
+    codigo_meta = str(_meta_valor(meta, "CODIGO", "CODIGO:") or "").strip()
+    codigo_adm = f"ADM-{ANIO}-{a_int(codigo_meta) if codigo_meta.isdigit() else est.id * 7 % 900 + 100:05d}"
+    modalidad = est.modalidad_admision or _meta_valor(meta, "MODALIDAD (EBR O EBA)", "MODALIDAD") or "ORDINARIO"
+    costo_meta = _meta_valor(meta, "S/. COSTO (S/. 250):", "S/. COSTO (S/. 250)")
+    monto_admision = a_float(250 if costo_meta in (None, "") else costo_meta)
     movimientos.append({
         "id": f"adm-{est.id}", "codigoRecibo": codigo_adm, "fechaHora": f"{fecha_adm}, 08:30:00",
         "estudianteId": est.id, "estudianteNombre": nombre, "dni": est.dni, "codigoEstudiante": est.codigo_estudiante,
         "conceptoCodigo": "ADM-01", "conceptoNombre": f"Derecho de Inscripción y Carpeta de Admisión {ANIO} ({modalidad})",
-        "conceptoCategoria": "Admisión Institucional", "monto": float(meta.get("S/. COSTO (S/. 250):") or 250),
+        "conceptoCategoria": "Admisión Institucional", "monto": monto_admision,
         "metodoPagoId": "banco_nacion", "metodoPagoNombre": "Banco de la Nación (Cta. Admisión)",
         "numeroOperacion": f"BN-{str(est.dni)[:6]}", "estado": "PAGADO", "cajero": f"Comisión Central de Admisión {ANIO}",
         "liberaMatricula": False, "origen": "admision", "token": firmar(secreto, codigo_adm, est.dni),
@@ -564,12 +603,13 @@ async def construir_estado_cuenta(db: AsyncSession, est: Estudiante, secreto: by
         if m["estado"] == "PAGADO" and "qrBoleta" not in m:
             agregar_qr(m, secreto, url_publica)
 
-    total_pagado = sum(m["monto"] for m in movimientos if m["estado"] == "PAGADO")
-    total_pendiente = sum(m["monto"] for m in movimientos if m["estado"] == "PENDIENTE")
+    total_pagado = sum(a_float(m.get("monto")) for m in movimientos if m["estado"] == "PAGADO")
+    total_pendiente = sum(a_float(m.get("monto")) for m in movimientos if m["estado"] == "PENDIENTE")
     estado = {
         "estudiante": {
             "id": est.id, "dni": est.dni, "nombres": est.nombres, "apellidos": est.apellidos,
             "codigo_estudiante": est.codigo_estudiante, "programa_id": est.programa_id,
+            "programa_nombre": nombre_programa,
             "modalidad_admision": est.modalidad_admision, "pago_matricula": bool(est.pago_matricula),
         },
         "movimientos": movimientos,

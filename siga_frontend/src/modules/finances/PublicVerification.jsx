@@ -45,7 +45,7 @@ export default function PublicVerification() {
     return buildStatementHtml({
       student: est,
       payments: state.data.movimientos,
-      careerName: CAREERS_MAP[est.programa_id] || 'Programa de Estudio General',
+      careerName: est.programa_nombre || CAREERS_MAP[est.programa_id] || 'Sin programa asignado',
       token: state.data.token,
       qrContent: state.data.qrContenido,
       emitted: state.data.emitido,

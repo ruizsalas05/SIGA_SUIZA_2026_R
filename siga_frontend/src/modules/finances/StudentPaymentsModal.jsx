@@ -164,7 +164,7 @@ export function StudentPaymentsModal({
 
   if (!student) return null;
 
-  const careerName = CAREERS_MAP[student.programa_id] || 'Programa de Estudio General';
+  const careerName = student.programa_nombre || CAREERS_MAP[student.programa_id] || 'Sin programa asignado';
   const fullName = `${student.nombres} ${student.apellidos}`;
   const initials = `${student.nombres?.[0] || ''}${student.apellidos?.[0] || ''}`.toUpperCase();
   const counts = { todos: yearMovements.length, PAGADO: stats.paid.length, PENDIENTE: stats.pending.length };

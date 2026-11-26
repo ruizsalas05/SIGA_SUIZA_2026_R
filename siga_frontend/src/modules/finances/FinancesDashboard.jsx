@@ -185,7 +185,14 @@ export function FinancesDashboard() {
     }
     let cancelled = false;
     tesoreriaApi.estadoCuenta(dossierStudentId)
-      .then(statement => { if (!cancelled) setDossierStatement(statement); })
+      .then(statement => {
+        if (cancelled) return;
+        setDossierStatement(statement);
+        setSelectedStudentForDossier(prev => prev && {
+          ...prev,
+          programa_nombre: statement.estudiante?.programa_nombre,
+        });
+      })
       .catch(e => { if (!cancelled) setDataError(`No se pudo cargar el estado de cuenta: ${e.message}`); });
     return () => { cancelled = true; };
   }, [dossierStudentId, transactions, catalog]);
@@ -276,7 +283,11 @@ export function FinancesDashboard() {
       const statement = await tesoreriaApi.estadoCuenta(student.id);
       setPayingStatement(statement);
       setPayingConceptId(conceptId);
-      setPayingStudent({ ...student, pago_matricula: statement.habilitado });
+      setPayingStudent({
+        ...student,
+        pago_matricula: statement.habilitado,
+        programa_nombre: statement.estudiante?.programa_nombre,
+      });
     } catch (e) {
       setDataError(`No se pudo abrir la ventanilla de cobro: ${e.message}`);
     }
@@ -353,7 +364,7 @@ export function FinancesDashboard() {
             dni: String(s.dni ?? ''),
             nombre: `${s.nombres} ${s.apellidos}`,
             codigo: s.codigo_estudiante || '',
-            programa: CAREERS_MAP[s.programa_id] || 'Programa de Estudio General',
+            programa: CAREERS_MAP[s.programa_id] || 'Sin programa asignado',
           }))
           .sort((a, b) => a.programa.localeCompare(b.programa) || a.nombre.localeCompare(b.nombre)),
       };
@@ -733,7 +744,7 @@ export function FinancesDashboard() {
           ) : viewMode === 'grid' ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
               {paginatedStudents.map(student => {
-                const career = CAREERS_MAP[student.programa_id] || 'Programa de Estudio General';
+                const career = CAREERS_MAP[student.programa_id] || 'Sin programa asignado';
                 const isPaid = student.pago_matricula;
                 const isSelected = selectedStudentForDossier?.id === student.id;
                 const matriculaReceipt = isPaid ? findMatriculaReceipt(transactions, student) : null;

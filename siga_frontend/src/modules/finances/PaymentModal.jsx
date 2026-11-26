@@ -66,7 +66,7 @@ export function PaymentModal({
   const selectedTarifa = selectedConcept
     ? selectedConcept.tarifas?.find(t => t.id === selectedTarifaId) || selectedConcept.tarifas?.[0] || null
     : null;
-  const careerName = CAREERS_MAP[student.programa_id] || 'Programa de Estudio General';
+  const careerName = student.programa_nombre || CAREERS_MAP[student.programa_id] || 'Sin programa asignado';
 
   const isLibre = selectedConcept?.tipoPrecio === 'libre';
   const monto = !selectedConcept

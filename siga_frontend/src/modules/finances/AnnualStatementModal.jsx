@@ -8,7 +8,7 @@ import { buildStatementHtml, printIframe } from './lib/printTemplates';
 export function AnnualStatementModal({ statement, onClose }) {
   const frameRef = useRef(null);
   const student = statement?.estudiante;
-  const careerName = student ? CAREERS_MAP[student.programa_id] || 'Programa de Estudio General' : '';
+  const careerName = student ? student.programa_nombre || CAREERS_MAP[student.programa_id] || 'Sin programa asignado' : '';
   const html = useMemo(
     () => (statement ? buildStatementHtml({
       student,
