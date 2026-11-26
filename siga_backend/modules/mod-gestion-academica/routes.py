@@ -21,11 +21,19 @@ MENSAJE_SIN_PROGRAMA = "Tu perfil no tiene carrera asignada, contacta a administ
 
 def _programa_forzado_identidad(ident: Identity) -> Tuple[bool, Optional[int]]:
     roles = {str(rol).lower().strip() for rol in ident.roles}
-    if es_superadmin(ident) or "admin" in roles or "coordinador_programa" in roles:
+    if es_superadmin(ident) or "admin" in roles:
         return False, None
-    if "docente" in roles or "secretaria_programa" in roles:
+    if "coordinador_programa" in roles or "docente" in roles or "secretaria_programa" in roles:
         return True, ident.programa_id
     return False, None
+
+
+async def _programa_obligado(request: Request, db: AsyncSession) -> Tuple[bool, Optional[int]]:
+    ident = await get_identity(request, db)
+    restringido, programa_id = _programa_forzado_identidad(ident)
+    if restringido and programa_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=MENSAJE_SIN_PROGRAMA)
+    return restringido, programa_id
 
 
 async def _resolver_periodo_estudiantes(valor: Optional[str], db: AsyncSession) -> Optional[int]:
@@ -192,7 +200,12 @@ async def ingesta_admitidos(
             db_estudiante = resultado.scalar_one_or_none()
 
             if db_estudiante:
-                db_estudiante.periodo_admision_id = periodo_estudiante
+                periodo_explicito = admitido.periodo_id is not None
+                if db_estudiante.periodo_admision_id is not None and not periodo_explicito:
+                    periodo_estudiante = db_estudiante.periodo_admision_id
+                    metadata["periodo_admision_id"] = periodo_estudiante
+                else:
+                    db_estudiante.periodo_admision_id = periodo_estudiante
                 db_estudiante.metadata_admision = {**(db_estudiante.metadata_admision or {}), **metadata}
                 estudiantes_asociados += 1
                 continue
@@ -257,6 +270,12 @@ async def ingesta_admitidos(
 
 @router.post("/estudiantes/", response_model=EstudianteResponse, status_code=status.HTTP_201_CREATED)
 async def crear_estudiante(request: Request, data: EstudianteCreate, db: AsyncSession = Depends(get_db)):
+    restringido, programa_forzado = await _programa_obligado(request, db)
+    if restringido:
+        if data.programa_id != programa_forzado:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tiene permisos sobre este programa")
+        data.programa_id = programa_forzado
+
     existing = await db.execute(select(Estudiante).where(
         or_(Estudiante.dni == data.dni, Estudiante.codigo_estudiante == data.codigo_estudiante)
     ))
@@ -786,7 +805,13 @@ async def actualizar_estudiante(estudiante_id: int, data: EstudianteUpdate, requ
     if not db_estudiante:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
 
+    restringido, programa_forzado = await _programa_obligado(request, db)
+    if restringido and db_estudiante.programa_id != programa_forzado:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tiene permisos sobre este estudiante")
+
     update_data = data.model_dump(exclude_unset=True)
+    if restringido and "programa_id" in update_data and update_data["programa_id"] != programa_forzado:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tiene permisos para cambiar el programa")
     for key, value in update_data.items():
         setattr(db_estudiante, key, value)
 
@@ -811,6 +836,10 @@ async def eliminar_estudiante(estudiante_id: int, request: Request, db: AsyncSes
     db_estudiante = result.scalar_one_or_none()
     if not db_estudiante:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+
+    restringido, programa_forzado = await _programa_obligado(request, db)
+    if restringido and db_estudiante.programa_id != programa_forzado:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tiene permisos sobre este estudiante")
 
     await db.delete(db_estudiante)
 

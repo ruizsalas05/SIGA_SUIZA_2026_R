@@ -605,7 +605,7 @@ export function AcademicDashboard() {
               onClick={() => setShowImportModal(true)}
             >
               <Rocket size={17} className="text-cyan-300" />
-              <span>Importar Plan MINEDU</span>
+              <span>Registrar plan de estudios</span>
             </button>
           </div>
         </div>

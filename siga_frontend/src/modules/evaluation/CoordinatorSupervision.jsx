@@ -28,6 +28,90 @@ function useSafeToast() {
   }
 }
 
+const ACTA_NUMEROS = ['CERO', 'UNO', 'DOS', 'TRES', 'CUATRO', 'CINCO', 'SEIS', 'SIETE', 'OCHO', 'NUEVE', 'DIEZ', 'ONCE', 'DOCE', 'TRECE', 'CATORCE', 'QUINCE', 'DIECISEIS', 'DIECISIETE', 'DIECIOCHO', 'DIECINUEVE', 'VEINTE'];
+
+const escaparHtml = (valor) => String(valor ?? '').replace(/[&<>"']/g, (caracter) => ({
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+}[caracter]));
+
+const numeroALetras = (valor) => {
+  const numero = Number(valor);
+  return Number.isInteger(numero) && numero >= 0 && numero <= 20 ? ACTA_NUMEROS[numero] : 'NO EVALUADO';
+};
+
+function construirActaPdfHtml({ programa, periodo, unidad, docente, estudiantes }) {
+  const calificados = estudiantes.filter((est) => est.nota_final !== '-' && !Number.isNaN(Number(est.nota_final)));
+  const aprobados = calificados.filter((est) => Number(est.nota_final) >= 13).length;
+  const desaprobados = calificados.length - aprobados;
+  const porcentaje = calificados.length ? Math.round((aprobados / calificados.length) * 100) : 0;
+  const filas = estudiantes.map((est, indice) => {
+    const nota = est.nota_final === '-' ? '-' : String(Number(est.nota_final)).padStart(2, '0');
+    const condicion = est.nota_final === '-' ? 'SIN NOTA' : Number(est.nota_final) >= 13 ? 'APROBADO' : 'DESAPROBADO';
+    return `<tr><td>${indice + 1}</td><td class="nombre">${escaparHtml(est.name)}</td><td class="nota">${escaparHtml(nota)}</td><td>${numeroALetras(est.nota_final)}</td><td>${condicion}</td></tr>`;
+  }).join('');
+
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Acta Oficial MINEDU - ${escaparHtml(unidad?.nombre || 'Unidad Didáctica')}</title><style>
+    @page{size:A4 landscape;margin:12mm}body{font-family:Arial,Helvetica,sans-serif;color:#0f172a;font-size:11px;margin:0}
+    header{text-align:center;border-bottom:2px solid #0f172a;padding-bottom:10px;margin-bottom:14px}
+    header .minedu{font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#475569}
+    header h1{font-size:17px;text-transform:uppercase;margin:4px 0 6px;letter-spacing:.4px}
+    header .acta{display:inline-block;border:1px solid #0f172a;background:#f1f5f9;padding:5px 12px;font-weight:800;text-transform:uppercase}
+    .datos{display:grid;grid-template-columns:repeat(2,1fr);gap:7px 20px;background:#f8fafc;border:1px solid #cbd5e1;padding:10px 12px;margin-bottom:14px}
+    .datos span{display:block;font-size:8px;font-weight:800;text-transform:uppercase;color:#64748b}
+    .datos b{font-size:11px}table{width:100%;border-collapse:collapse;margin-bottom:14px}th,td{border:1px solid #94a3b8;padding:6px 8px;text-align:center}
+    th{background:#e2e8f0;text-transform:uppercase;font-size:9px}.nombre{text-align:left;font-weight:700}.nota{font-size:13px;font-weight:800}
+    .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;text-align:center;margin-bottom:26px}
+    .stats div{border:1px solid #cbd5e1;background:#f8fafc;padding:8px}.stats span{display:block;font-size:8px;text-transform:uppercase;color:#64748b;font-weight:800}.stats b{font-size:14px}
+    .firmas{display:grid;grid-template-columns:repeat(3,1fr);gap:30px;text-align:center}.firma{border-top:1px solid #0f172a;padding-top:6px}.firma b{display:block}.firma small{color:#64748b}
+    footer{border-top:1px solid #e2e8f0;margin-top:26px;padding-top:7px;text-align:center;color:#64748b;font-size:8px}
+  </style></head><body>
+    <header><div class="minedu">República del Perú · Ministerio de Educación</div><h1>Instituto de Educación Superior Tecnológico Público "Suiza"</h1><div class="acta">Acta consolidada de evaluación final de unidad didáctica</div></header>
+    <section class="datos">
+      <div><span>Programa de estudios</span><b>${escaparHtml(programa)}</b></div>
+      <div><span>Periodo académico</span><b>${escaparHtml(periodo)}</b></div>
+      <div><span>Unidad didáctica</span><b>${escaparHtml(unidad?.nombre || '-')}</b></div>
+      <div><span>Módulo formativo</span><b>${escaparHtml(unidad?.moduloNombre || '-')}</b></div>
+      <div><span>Docente responsable</span><b>${escaparHtml(docente || 'Docente Titular')}</b></div>
+      <div><span>Fecha de emisión</span><b>${escaparHtml(new Date().toLocaleDateString('es-PE'))}</b></div>
+    </section>
+    <table><thead><tr><th>N°</th><th>Apellidos y Nombres</th><th>Nota (N°)</th><th>Nota en Letras</th><th>Condición</th></tr></thead><tbody>${filas || '<tr><td colspan="5">Sin estudiantes matriculados</td></tr>'}</tbody></table>
+    <section class="stats"><div><span>Matriculados</span><b>${estudiantes.length}</b></div><div><span>Aprobados</span><b>${aprobados}</b></div><div><span>Desaprobados</span><b>${desaprobados}</b></div><div><span>% Aprobación</span><b>${porcentaje}%</b></div></section>
+    <section class="firmas"><div class="firma"><b>Firma del Docente</b><small>${escaparHtml(docente || 'Docente Titular')}</small></div><div class="firma"><b>Coordinación de Carrera</b><small>Visto Bueno</small></div><div class="firma"><b>Secretaría Académica</b><small>Recepción Oficial</small></div></section>
+    <footer>Documento generado por el Sistema Integrado de Gestión Académica (SIGA) · Formato institucional MINEDU · ${escaparHtml(new Date().toLocaleString('es-PE'))}</footer>
+  </body></html>`;
+}
+
+function exportarActaPdf({ programa, periodo, unidad, docente, estudiantes }) {
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.position = 'fixed';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.border = '0';
+  document.body.appendChild(iframe);
+  const doc = iframe.contentDocument || iframe.contentWindow?.document;
+  if (!doc) {
+    iframe.remove();
+    return;
+  }
+  doc.open();
+  doc.write(construirActaPdfHtml({ programa, periodo, unidad, docente, estudiantes }));
+  doc.close();
+  window.setTimeout(() => {
+    if (typeof iframe.contentWindow?.print === 'function') {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+    } else {
+      window.print();
+    }
+    window.setTimeout(() => iframe.remove(), 1500);
+  }, 150);
+}
+
 export function CoordinatorSupervision() {
   const { user } = useAuth();
   const { toast } = useSafeToast();
@@ -367,9 +451,15 @@ export function CoordinatorSupervision() {
               </div>
               <button 
                 className="btn-primary text-sm px-4 py-2 flex items-center"
-                onClick={() => toast.info("Función 'Exportar a PDF (MINEDU)' en desarrollo.")}
+                onClick={() => exportarActaPdf({
+                  programa: programs.find(p => p.id.toString() === selectedProgram)?.nombre || '',
+                  periodo: periods.find(p => p.id.toString() === selectedPeriod)?.codigo || '',
+                  unidad: selectedViewUD,
+                  docente: user?.full_name,
+                  estudiantes: udStudents,
+                })}
               >
-                <FileSpreadsheet className="w-4 h-4 mr-1" /> Exportar Acta Oficial
+                <FileSpreadsheet className="w-4 h-4 mr-1" /> Exportar a PDF (MINEDU)
               </button>
             </div>
           </div>

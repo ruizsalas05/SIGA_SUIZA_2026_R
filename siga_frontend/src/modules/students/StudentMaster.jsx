@@ -574,8 +574,18 @@ export function StudentMaster() {
   const { user } = useAuth();
   const toast = useToast();
   const userRoles = user?.roles ? user.roles.map(r => typeof r === 'string' ? r : r.nombre || r.name) : [];
-  const primaryRole = user?.is_superuser ? 'superadmin' : (userRoles.length > 0 ? userRoles[0] : (user?.role || 'invitado'));
+  const esCoordinador = userRoles.includes('coordinador_programa') || user?.role === 'coordinador_programa';
+  const esSecretariaPrograma = userRoles.includes('secretaria_programa') || user?.role === 'secretaria_programa';
+  const primaryRole = user?.is_superuser
+    ? 'superadmin'
+    : esCoordinador
+      ? 'coordinador_programa'
+      : esSecretariaPrograma
+        ? 'secretaria_programa'
+        : (userRoles.length > 0 ? userRoles[0] : (user?.role || 'invitado'));
   const userRole = primaryRole;
+  const programaIdentidad = user?.programa_id ?? user?.perfil?.programa_estudio_id ?? null;
+  const programaFijado = (esCoordinador || esSecretariaPrograma) && programaIdentidad ? String(programaIdentidad) : null;
   const [students, setStudents] = useState([]);
   const [programas, setProgramas] = useState([]);
   const [periodos, setPeriodos] = useState([]);
@@ -586,9 +596,7 @@ export function StudentMaster() {
   const [editingStudent, setEditingStudent] = useState(null);
   const [wizardStep, setWizardStep] = useState(1);
   const [selectedStudent, setSelectedStudent] = useState(null);
-  const [currentPrograma, setCurrentPrograma] = useState(() =>
-    userRole === 'secretaria_programa' && user?.programa_id ? String(user.programa_id) : 'ALL'
-  );
+  const [currentPrograma, setCurrentPrograma] = useState(() => programaFijado || 'ALL');
   const [stepDir, setStepDir] = useState('forward');
   const [loadError, setLoadError] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -606,13 +614,18 @@ export function StudentMaster() {
   const [showMissing, setShowMissing] = useState(false);
 
   const PROGRAMAS = [OPCION_TODOS_PROGRAMAS, ...programas.map(p => ({ id: String(p.id), label: p.nombre }))];
-  const PROGRAMAS_OPTIONS = [
-    { value: '', label: 'Seleccione una carrera...' },
-    ...PROGRAMAS.filter(programa => programa.id !== 'ALL').map(programa => ({
-      value: programa.id,
-      label: programa.label,
-    })),
-  ];
+  const PROGRAMAS_OPTIONS = programaFijado
+    ? PROGRAMAS.filter(programa => programa.id === programaFijado).map(programa => ({
+        value: programa.id,
+        label: programa.label,
+      }))
+    : [
+        { value: '', label: 'Seleccione una carrera...' },
+        ...PROGRAMAS.filter(programa => programa.id !== 'ALL').map(programa => ({
+          value: programa.id,
+          label: programa.label,
+        })),
+      ];
 
   const getProgramaLabel = (programaId) => {
     const programa = PROGRAMAS.find(item => item.id === String(programaId));
@@ -738,10 +751,9 @@ export function StudentMaster() {
         );
         if (activo) {
           setProgramas(activos);
-          if (userRole === 'secretaria_programa' && activos.length > 0 && currentProgramaRef.current === 'ALL') {
-            const programa = String(activos[0].id);
-            currentProgramaRef.current = programa;
-            setCurrentPrograma(programa);
+          if (programaFijado && currentProgramaRef.current !== programaFijado) {
+            currentProgramaRef.current = programaFijado;
+            setCurrentPrograma(programaFijado);
             handleSearchRef.current(searchTermRef.current);
           }
         }
@@ -752,7 +764,7 @@ export function StudentMaster() {
     };
     cargarProgramas();
     return () => { activo = false; };
-  }, [userRole]);
+  }, [userRole, programaFijado]);
 
   useEffect(() => {
     let activo = true;
@@ -804,9 +816,10 @@ export function StudentMaster() {
   const missingBySector = (stepId) => (SECTOR_REQUIRED[stepId] || []).filter(isFieldMissing);
   const sectorHasMissing = (stepId) => missingBySector(stepId).length > 0;
   const defaultProgramaId = () => {
+    if (programaFijado) return programaFijado;
     if (currentPrograma !== 'ALL') return currentPrograma;
     if (form.programa_id) return form.programa_id;
-    return user?.programa_id ? String(user.programa_id) : '';
+    return programaIdentidad ? String(programaIdentidad) : '';
   };
 
   const generarCodigoLocalUnico = () => {
@@ -917,8 +930,9 @@ export function StudentMaster() {
 
     setSubmitting(true);
     try {
-      const programaId = form.programa_id
-        || (currentPrograma !== 'ALL' ? currentPrograma : (user?.programa_id ? String(user.programa_id) : ''));
+      const programaId = programaFijado
+        || form.programa_id
+        || (currentPrograma !== 'ALL' ? currentPrograma : (programaIdentidad ? String(programaIdentidad) : ''));
 
       const metadata_admision = {
         departamento: form.departamento || null,
@@ -987,10 +1001,13 @@ export function StudentMaster() {
       };
 
       // Garantizar asignación obligatoria de programa_id
-      const assignedProg = form.programa_id
+      const assignedProg = programaFijado
+        || form.programa_id
         || (currentPrograma && currentPrograma !== 'ALL' ? currentPrograma : null)
-        || (user?.programa_id ? String(user.programa_id) : null)
-        || (user?.email === 'secretaria_prog@siga.edu' ? '2' : '1');
+        || (programaIdentidad ? String(programaIdentidad) : null);
+      if (!assignedProg || Number.isNaN(parseInt(assignedProg, 10))) {
+        throw new Error('Tu perfil no tiene carrera asignada, contacta a administración');
+      }
       payload.programa_id = parseInt(assignedProg, 10);
 
       const res = await fetch(`${API_BASE}/api/mod-gestion-academica/estudiantes/`, {

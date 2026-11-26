@@ -4,6 +4,9 @@ from sqlalchemy import select, func, delete, text
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Tuple
 from datetime import datetime, date
+import base64
+import binascii
+import re
 from pydantic import BaseModel, ConfigDict, model_validator
 from database import get_db, OutboxEvent
 from models import ProgramaEstudio, ProgramaConfiguracion, ProgramaModulo, ProgramaUnidad, ProgramaRequisito, PeriodoAcademico
@@ -32,9 +35,9 @@ def _es_docente_restringido(ident: Identity) -> bool:
 
 def _programa_forzado_identidad(ident: Identity) -> Tuple[bool, Optional[int]]:
     roles = _roles_usuario(ident)
-    if es_superadmin(ident) or "admin" in roles or "coordinador_programa" in roles:
+    if es_superadmin(ident) or "admin" in roles:
         return False, None
-    if "docente" in roles or "secretaria_programa" in roles:
+    if "coordinador_programa" in roles or "docente" in roles or "secretaria_programa" in roles:
         return True, ident.programa_id
     return False, None
 
@@ -1286,6 +1289,64 @@ async def actualizar_horario(
     await db.commit()
     return HorarioPeriodoResponse.model_validate(db_horario)
 
+MAX_DOCUMENTO_BYTES = 10 * 1024 * 1024
+TIPOS_DOCUMENTO_PERMITIDOS = {
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+}
+
+
+def _nombre_archivo_seguro(nombre: Optional[str]) -> str:
+    limpio = str(nombre or 'documento').replace('\\', '/').split('/')[-1]
+    limpio = re.sub(r'[\r\n"]', '', limpio).strip()
+    return limpio[:200] or 'documento'
+
+
+def _decodificar_documento(archivo_base64: Optional[str], archivo_nombre: Optional[str], archivo_content_type: Optional[str]) -> Optional[dict]:
+    if not archivo_base64:
+        return None
+    try:
+        contenido = base64.b64decode(archivo_base64.split(',')[-1], validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El archivo adjunto no es válido")
+    if not contenido:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El archivo adjunto está vacío")
+    if len(contenido) > MAX_DOCUMENTO_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="El archivo supera el límite de 10 MB")
+    tipo = str(archivo_content_type or 'application/octet-stream').lower()
+    if tipo not in TIPOS_DOCUMENTO_PERMITIDOS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tipo de archivo no permitido")
+    return {
+        'nombre': _nombre_archivo_seguro(archivo_nombre),
+        'content_type': tipo,
+        'size': len(contenido),
+        'contenido': contenido,
+    }
+
+
+async def _guardar_documento_planificacion(db: AsyncSession, tipo: str, referencia_id: int, datos: Optional[dict], url_endpoint: str) -> Optional[str]:
+    if datos is None:
+        return None
+    resultado = await db.execute(
+        select(DocumentoPlanificacion).where(
+            DocumentoPlanificacion.tipo == tipo,
+            DocumentoPlanificacion.referencia_id == referencia_id,
+        )
+    )
+    documento = resultado.scalars().first()
+    if documento is None:
+        documento = DocumentoPlanificacion(tipo=tipo, referencia_id=referencia_id)
+        db.add(documento)
+    documento.archivo_nombre = datos['nombre']
+    documento.archivo_content_type = datos['content_type']
+    documento.archivo_size = datos['size']
+    documento.archivo_contenido = datos['contenido']
+    return url_endpoint
+
+
 # --- Schemas Docente (Sílabo y Plan de Trabajo) ---
 class SilaboBase(BaseModel):
     carga_lectiva_id: int
@@ -1294,7 +1355,9 @@ class SilaboBase(BaseModel):
     observaciones: Optional[str] = None
 
 class SilaboCreate(SilaboBase):
-    pass
+    archivo_base64: Optional[str] = None
+    archivo_nombre: Optional[str] = None
+    archivo_content_type: Optional[str] = None
 
 class SilaboResponse(SilaboBase):
     id: int
@@ -1311,7 +1374,9 @@ class PlanTrabajoDocenteBase(BaseModel):
     observaciones: Optional[str] = None
 
 class PlanTrabajoDocenteCreate(PlanTrabajoDocenteBase):
-    pass
+    archivo_base64: Optional[str] = None
+    archivo_nombre: Optional[str] = None
+    archivo_content_type: Optional[str] = None
 
 class PlanTrabajoDocenteResponse(PlanTrabajoDocenteBase):
     id: int
@@ -1320,7 +1385,7 @@ class PlanTrabajoDocenteResponse(PlanTrabajoDocenteBase):
     model_config = ConfigDict(from_attributes=True)
 
 # --- Endpoints Docente (Sílabos y Planes) ---
-from models import Silabo, PlanTrabajoDocente
+from models import Silabo, PlanTrabajoDocente, DocumentoPlanificacion
 
 @router.get("/docente/{docente_id}/carga-lectiva", response_model=List[CargaLectivaResponse])
 async def obtener_carga_docente(docente_id: int, request: Request, response: Response, periodo_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
@@ -1351,6 +1416,8 @@ async def crear_silabo(silabo: SilaboCreate, request: Request, db: AsyncSession 
     res_silabo = await db.execute(
         select(Silabo).where(Silabo.carga_lectiva_id == silabo.carga_lectiva_id)
     )
+    datos_documento = _decodificar_documento(silabo.archivo_base64, silabo.archivo_nombre, silabo.archivo_content_type)
+    valores_silabo = silabo.model_dump(exclude={'archivo_base64', 'archivo_nombre', 'archivo_content_type'})
     db_silabo = res_silabo.scalars().first()
     if db_silabo:
         db_silabo.archivo_url = silabo.archivo_url
@@ -1358,8 +1425,19 @@ async def crear_silabo(silabo: SilaboCreate, request: Request, db: AsyncSession 
         if silabo.observaciones is not None:
             db_silabo.observaciones = silabo.observaciones
     else:
-        db_silabo = Silabo(**silabo.model_dump())
+        db_silabo = Silabo(**valores_silabo)
         db.add(db_silabo)
+        await db.flush()
+
+    url_documento = await _guardar_documento_planificacion(
+        db,
+        'silabo',
+        db_silabo.id,
+        datos_documento,
+        f"/api/mod-programas-estudio/silabos/{db_silabo.id}/archivo",
+    )
+    if url_documento:
+        db_silabo.archivo_url = url_documento
 
     await db.commit()
     await db.refresh(db_silabo)
@@ -1410,6 +1488,8 @@ async def crear_plan_trabajo(plan: PlanTrabajoDocenteCreate, request: Request, d
             PlanTrabajoDocente.programa_id == plan.programa_id
         )
     )
+    datos_documento = _decodificar_documento(plan.archivo_base64, plan.archivo_nombre, plan.archivo_content_type)
+    valores_plan = plan.model_dump(exclude={'archivo_base64', 'archivo_nombre', 'archivo_content_type'})
     db_plan = res_plan.scalars().first()
     if db_plan:
         db_plan.archivo_url = plan.archivo_url
@@ -1417,12 +1497,90 @@ async def crear_plan_trabajo(plan: PlanTrabajoDocenteCreate, request: Request, d
         if plan.observaciones is not None:
             db_plan.observaciones = plan.observaciones
     else:
-        db_plan = PlanTrabajoDocente(**plan.model_dump())
+        db_plan = PlanTrabajoDocente(**valores_plan)
         db.add(db_plan)
+        await db.flush()
+
+    url_documento = await _guardar_documento_planificacion(
+        db,
+        'plan',
+        db_plan.id,
+        datos_documento,
+        f"/api/mod-programas-estudio/planes-trabajo/{db_plan.id}/archivo",
+    )
+    if url_documento:
+        db_plan.archivo_url = url_documento
 
     await db.commit()
     await db.refresh(db_plan)
     return db_plan
+
+@router.get("/silabos/{silabo_id}/archivo")
+async def descargar_archivo_silabo(silabo_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    ident = await get_identity(request, db)
+    resultado = await db.execute(
+        select(Silabo, CargaLectiva.programa_id, CargaLectiva.docente_id)
+        .outerjoin(CargaLectiva, Silabo.carga_lectiva_id == CargaLectiva.id)
+        .where(Silabo.id == silabo_id)
+    )
+    fila = resultado.first()
+    if not fila:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Silabo no encontrado")
+    db_silabo, programa_id, docente_id = fila
+    autorizado = (
+        es_superadmin(ident)
+        or (docente_id is not None and ident.user_id == docente_id)
+        or (programa_id is not None and es_coordinador_de(ident, programa_id))
+    )
+    if not autorizado:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tiene permisos para ver este documento")
+
+    resultado_documento = await db.execute(
+        select(DocumentoPlanificacion).where(
+            DocumentoPlanificacion.tipo == 'silabo',
+            DocumentoPlanificacion.referencia_id == silabo_id,
+        )
+    )
+    documento = resultado_documento.scalars().first()
+    if not documento:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="El sílabo no tiene archivo adjunto")
+    return Response(
+        content=documento.archivo_contenido,
+        media_type=documento.archivo_content_type,
+        headers={"Content-Disposition": f'inline; filename="{_nombre_archivo_seguro(documento.archivo_nombre)}"'},
+    )
+
+
+@router.get("/planes-trabajo/{plan_id}/archivo")
+async def descargar_archivo_plan(plan_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    ident = await get_identity(request, db)
+    resultado = await db.execute(select(PlanTrabajoDocente).where(PlanTrabajoDocente.id == plan_id))
+    db_plan = resultado.scalar_one_or_none()
+    if not db_plan:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan de trabajo no encontrado")
+    autorizado = (
+        es_superadmin(ident)
+        or ident.user_id == db_plan.docente_id
+        or (db_plan.programa_id is not None and es_coordinador_de(ident, db_plan.programa_id))
+    )
+    if not autorizado:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tiene permisos para ver este documento")
+
+    resultado_documento = await db.execute(
+        select(DocumentoPlanificacion).where(
+            DocumentoPlanificacion.tipo == 'plan',
+            DocumentoPlanificacion.referencia_id == plan_id,
+        )
+    )
+    documento = resultado_documento.scalars().first()
+    if not documento:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="El plan no tiene archivo adjunto")
+    return Response(
+        content=documento.archivo_contenido,
+        media_type=documento.archivo_content_type,
+        headers={"Content-Disposition": f'inline; filename="{_nombre_archivo_seguro(documento.archivo_nombre)}"'},
+    )
+
 
 @router.get("/docente/{docente_id}/planes-trabajo", response_model=List[PlanTrabajoDocenteResponse])
 async def listar_planes_trabajo(docente_id: int, periodo_id: int, request: Request, response: Response, programa_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+import { apiClient } from '../core/api/client';
 import { ToastProvider } from '../core/ui/ToastContext';
 import { ConfirmProvider } from '../core/ui/ConfirmModal';
 import { ScheduleBuilder } from '../modules/academic/ScheduleBuilder';
@@ -33,17 +34,20 @@ describe('Milestone 3: Erradicación Absoluta de Diálogos Nativos del Navegador
   let alertSpy;
   let confirmSpy;
   let promptSpy;
+  let printSpy;
 
   beforeEach(() => {
     alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
     confirmSpy = vi.spyOn(window, 'confirm').mockImplementation(() => false);
     promptSpy = vi.spyOn(window, 'prompt').mockImplementation(() => '');
+    printSpy = vi.spyOn(window, 'print').mockImplementation(() => {});
   });
 
   afterEach(() => {
     alertSpy.mockRestore();
     confirmSpy.mockRestore();
     promptSpy.mockRestore();
+    printSpy.mockRestore();
     vi.clearAllMocks();
   });
 
@@ -170,28 +174,38 @@ describe('Milestone 3: Erradicación Absoluta de Diálogos Nativos del Navegador
       expect(screen.getByText('Seleccione ciclo y docente')).toBeInTheDocument();
     });
 
-    it('CoordinatorSupervision: exportación de acta oficial dispara toast.info en vez de alert', async () => {
-      // Mock de subida de modal con portal
+    it('CoordinatorSupervision: exportación de acta oficial genera documento imprimible', async () => {
+      apiClient.request.mockImplementation((url) => {
+        if (url.endsWith('/programas')) return Promise.resolve([{ id: 1, nombre: 'Contaduría' }]);
+        if (url.endsWith('/periodos')) return Promise.resolve([{ id: 2, codigo: '2026-I', estado: 'ACTIVO' }]);
+        if (url.endsWith('/personal')) return Promise.resolve([]);
+        if (url.includes('/malla')) return Promise.resolve([{ id: 1, nombre: 'Módulo', unidades: [{ id: 10, nombre: 'Contabilidad' }] }]);
+        if (url.includes('/matriculas/unidad/')) return Promise.resolve([{ id: 100, matricula_detalle_id: 5, apellidos: 'Pérez', nombres: 'Ana' }]);
+        if (url.includes('/registros/unidad/')) return Promise.resolve([{ matricula_detalle_id: 5, nota_final: 15, estado: 'aprobado' }]);
+        return Promise.resolve([]);
+      });
+
       render(
-        <ToastProvider>
-          <CoordinatorSupervision />
-        </ToastProvider>
+        <ConfirmProvider>
+          <ToastProvider>
+            <CoordinatorSupervision />
+          </ToastProvider>
+        </ConfirmProvider>
       );
 
-      // Simular apertura de modal de acta seleccionando una unidad
-      const viewActaButtons = screen.queryAllByRole('button', { name: /ver acta/i });
-      if (viewActaButtons.length > 0) {
-        fireEvent.click(viewActaButtons[0]);
-      }
+      const viewActaButton = await screen.findByRole('button', { name: /ver acta/i });
+      fireEvent.click(viewActaButton);
 
-      // El botón de exportar acta oficial si se renderiza
-      const exportBtn = screen.queryByRole('button', { name: /exportar acta oficial/i });
-      if (exportBtn) {
-        fireEvent.click(exportBtn);
-        expect(alertSpy).not.toHaveBeenCalled();
-        const toast = await screen.findByTestId('toast-info');
-        expect(toast).toBeInTheDocument();
-      }
+      const exportBtn = await screen.findByRole('button', { name: /exportar a pdf \(minedu\)/i });
+      fireEvent.click(exportBtn);
+
+      expect(alertSpy).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('toast-info')).not.toBeInTheDocument();
+      await waitFor(() => expect(document.querySelector('iframe[aria-hidden="true"]')).not.toBeNull());
+      const html = document.querySelector('iframe[aria-hidden="true"]').contentDocument?.documentElement?.innerHTML || '';
+      expect(html).toContain('MINEDU');
+      expect(html).toContain('Pérez');
+      expect(html).toContain('APROBADO');
     });
   });
 });

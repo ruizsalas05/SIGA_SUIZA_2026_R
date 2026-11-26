@@ -52,6 +52,29 @@ export function CoordinatorReview({ programId, periodId, docentes, cargaLectiva,
     setLoading(false);
   };
 
+  const verDocumento = async (event, url) => {
+    event.preventDefault();
+    if (!url || url.startsWith('/docs/')) {
+      toast.error('Este registro aún no tiene un archivo adjunto válido.');
+      return;
+    }
+    const ventana = window.open('', '_blank');
+    try {
+      const blob = await apiClient.requestBlob(url);
+      if (!blob) {
+        ventana?.close();
+        return;
+      }
+      const objectUrl = URL.createObjectURL(blob);
+      if (ventana) ventana.location.href = objectUrl;
+      else window.open(objectUrl, '_blank', 'noopener,noreferrer');
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+    } catch (err) {
+      ventana?.close();
+      toast.error(err.message || 'No se pudo abrir el documento.');
+    }
+  };
+
   useEffect(() => {
     fetchData();
   }, [programId, periodId]);
@@ -131,7 +154,7 @@ export function CoordinatorReview({ programId, periodId, docentes, cargaLectiva,
                   }`}>
                     {plan.estado}
                   </span>
-                  <a href={plan.archivo_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:text-primary-dark text-sm font-medium flex items-center">
+                  <a href={plan.archivo_url} target="_blank" rel="noopener noreferrer" onClick={(e) => verDocumento(e, plan.archivo_url)} className="text-primary hover:text-primary-dark text-sm font-medium flex items-center">
                     <ExternalLink size={14} className="mr-1" /> Ver Doc
                   </a>
                 </div>
@@ -194,7 +217,7 @@ export function CoordinatorReview({ programId, periodId, docentes, cargaLectiva,
                   }`}>
                     {silabo.estado}
                   </span>
-                  <a href={silabo.archivo_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:text-primary-dark text-sm font-medium flex items-center">
+                  <a href={silabo.archivo_url} target="_blank" rel="noopener noreferrer" onClick={(e) => verDocumento(e, silabo.archivo_url)} className="text-primary hover:text-primary-dark text-sm font-medium flex items-center">
                     <ExternalLink size={14} className="mr-1" /> Ver Doc
                   </a>
                 </div>

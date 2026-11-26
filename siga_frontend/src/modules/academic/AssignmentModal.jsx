@@ -19,18 +19,26 @@ export function AssignmentModal({
 
   const isOdd = periodoObj?.codigo?.endsWith('-I');
   const isEven = periodoObj?.codigo?.endsWith('-II');
-  
-  const filteredUnidades = unidadesFlat.filter(u => {
-    if (isOdd) return [1, 3, 5].includes(u.periodo_sugerido);
-    if (isEven) return [2, 4, 6].includes(u.periodo_sugerido);
-    return true; // Fallback
+  const ciclosEsperados = isOdd ? [1, 3, 5] : isEven ? [2, 4, 6] : null;
+  const cicloDe = (u) => ciclosEsperados && !ciclosEsperados.includes(u.periodo_sugerido) ? 'Otros' : String(u.periodo_sugerido ?? 'Sin ciclo');
+
+  const filteredUnidades = unidadesFlat.filter((u) => {
+    if (!ciclosEsperados) return true;
+    return ciclosEsperados.includes(u.periodo_sugerido) || !Number.isInteger(u.periodo_sugerido) || u.periodo_sugerido > 6;
   });
 
   const grouped = filteredUnidades.reduce((acc, u) => {
-    acc[u.periodo_sugerido] = acc[u.periodo_sugerido] || [];
-    acc[u.periodo_sugerido].push(u);
+    const ciclo = cicloDe(u);
+    acc[ciclo] = acc[ciclo] || [];
+    acc[ciclo].push(u);
     return acc;
   }, {});
+
+  const sortedCiclos = Object.keys(grouped).sort((a, b) => {
+    if (a === 'Otros') return 1;
+    if (b === 'Otros') return -1;
+    return Number(a) - Number(b);
+  });
 
   const toggleCurso = (id) => {
     const idStr = String(id);
@@ -65,11 +73,11 @@ export function AssignmentModal({
         </div>
         
         <div className="p-6 overflow-y-auto flex-1 bg-slate-50/50">
-          {Object.keys(grouped).sort().map(ciclo => (
+          {sortedCiclos.map(ciclo => (
             <div key={ciclo} className="mb-6">
               <h4 className="font-bold text-slate-700 border-b pb-2 mb-3 text-sm uppercase tracking-wider flex items-center">
-                <span className="w-6 h-6 rounded-full bg-primary-soft text-primary-dark flex items-center justify-center mr-2 text-xs font-bold">{ciclo}</span>
-                Ciclo {ciclo}
+                <span className="w-6 h-6 rounded-full bg-primary-soft text-primary-dark flex items-center justify-center mr-2 text-xs font-bold">{ciclo === 'Otros' ? '•' : ciclo}</span>
+                {ciclo === 'Otros' ? 'Otros ciclos' : `Ciclo ${ciclo}`}
               </h4>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 {grouped[ciclo].map(u => (

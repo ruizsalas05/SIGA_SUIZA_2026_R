@@ -65,11 +65,8 @@ async def asegurar_cuenta_estudiante(db: AsyncSession, estudiante: Any) -> Dict[
     apellidos = str(_valor(estudiante, "apellidos", "") or "").strip()
     full_name = f"{nombres} {apellidos}".strip() or dni_digitos
 
-    email_institucional = str(_valor(estudiante, "email_institucional", "") or "").strip().lower()
-    email_personal = str(_valor(estudiante, "email_personal", "") or "").strip().lower()
     email_generado = f"{dni_digitos}@siga.edu"
-    emails = [email for email in (email_institucional, email_personal, email_generado) if email]
-    email_creacion = email_institucional or email_generado
+    email_creacion = email_generado
 
     rol = await db.execute(
         text("SELECT id FROM core_roles WHERE lower(name) = 'estudiante'")
@@ -115,11 +112,20 @@ async def asegurar_cuenta_estudiante(db: AsyncSession, estudiante: Any) -> Dict[
             break
 
     if not usuario:
-        usuario = await _usuario_por_email(db, list(dict.fromkeys(emails)))
+        usuario = await _usuario_por_email(db, [email_generado])
 
     if usuario:
         usuario_id = int(usuario["id"])
         await _vincular(db, estudiante, usuario_id)
+        rol_existente = await db.execute(
+            text("SELECT 1 FROM core_user_roles WHERE user_id = :uid AND role_id = :rid"),
+            {"uid": usuario_id, "rid": rol_id},
+        )
+        if rol_existente.scalar_one_or_none() is None:
+            await db.execute(
+                text("INSERT INTO core_user_roles (user_id, role_id) VALUES (:uid, :rid)"),
+                {"uid": usuario_id, "rid": rol_id},
+            )
         if not usuario["is_active"]:
             await db.execute(
                 text("UPDATE core_users SET is_active = true WHERE id = :uid"),

@@ -4,6 +4,7 @@ import { useAuth } from '../../core/auth/useAuth';
 import { apiClient } from '../../core/api/client';
 import { useToast } from '../../core/ui/ToastContext';
 import { useConfirm } from '../../core/ui/ConfirmModal';
+import { Sheet, buildWorkbook, downloadBlob } from '../finances/lib/xlsxWriter';
 
 import { CoordinatorReview } from './CoordinatorReview';
 import { CoordinatorTutorias } from './CoordinatorTutorias';
@@ -318,17 +319,37 @@ export function CoordinatorAcademic() {
     return ud ? ud.nombre : `ID: ${id}`;
   };
 
-  const handleExportCSV = () => {
-    const headers = "Unidad Didactica,Docente,Turno,Seccion,Estado\n";
-    const rows = cargaLectiva.map(c => `"${getUDName(c.unidad_didactica_id)}","${getDocenteName(c.docente_id)}",${c.turno},${c.seccion},${c.estado}`).join('\n');
-    const blob = new Blob(["\uFEFF" + headers + rows], { type: 'text/csv;charset=utf-8;' }); // \uFEFF para soportar caracteres UTF-8 en Excel
-    const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.setAttribute("href", url);
-    link.setAttribute("download", `Carga_Lectiva_${selectedProgram}_${selectedPeriod}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const handleExportXlsx = () => {
+    const sheet = new Sheet('Carga Lectiva');
+    const nombrePrograma = programs.find(p => p.id.toString() === selectedProgram)?.nombre || 'Programa';
+    const codigoPeriodo = periods.find(p => p.id.toString() === selectedPeriod)?.codigo || 'Periodo';
+    sheet.set(0, 1, 'CARGA LECTIVA - COORDINACIÓN ACADÉMICA', 'title');
+    sheet.set(0, 2, `Programa: ${nombrePrograma}   |   Periodo: ${codigoPeriodo}   |   Generado: ${new Date().toLocaleString('es-PE')}`, 'subtitle');
+    const headers = ['Unidad Didáctica', 'Docente', 'Turno', 'Sección', 'Estado'];
+    headers.forEach((header, col) => sheet.set(col, 4, header, 'header'));
+    cargaLectiva.forEach((item, index) => {
+      const row = 5 + index;
+      const style = index % 2 === 1 ? 'textZebra' : 'text';
+      const centerStyle = index % 2 === 1 ? 'centerZebra' : 'center';
+      sheet.set(0, row, getUDName(item.unidad_didactica_id), style);
+      sheet.set(1, row, getDocenteName(item.docente_id), style);
+      sheet.set(2, row, item.turno || '-', centerStyle);
+      sheet.set(3, row, item.seccion ?? '-', centerStyle);
+      sheet.set(4, row, item.estado || '-', centerStyle);
+    });
+    const lastRow = Math.max(5, 4 + cargaLectiva.length);
+    sheet.setRowHeight(1, 24);
+    sheet.setRowHeight(4, 28);
+    sheet.colWidths = [42, 34, 14, 12, 16];
+    sheet.freeze = { row: 5, col: 0 };
+    sheet.autoFilter = `A4:E${lastRow}`;
+    sheet.merge(0, 1, 4, 1);
+    sheet.merge(0, 2, 4, 2);
+    sheet.landscape = true;
+    sheet.printTitleRow = 4;
+    sheet.footer = `Carga Lectiva · ${nombrePrograma} · ${codigoPeriodo}`;
+    downloadBlob(buildWorkbook([sheet], { title: 'Carga Lectiva - SIGA' }), `Carga_Lectiva_${nombrePrograma}_${codigoPeriodo}.xlsx`.replace(/[^\wÁÉÍÓÚáéíóúÑñ-]+/g, '_'));
+    toast.success('Archivo XLSX de carga lectiva descargado.');
   };
 
   const handleOpenCloneModal = () => {
@@ -581,10 +602,10 @@ export function CoordinatorAcademic() {
                         <h3 className="text-lg font-semibold text-slate-text">Carga Lectiva Actual</h3>
                         {cargaLectiva.length > 0 && (
                           <button 
-                            onClick={handleExportCSV}
+                            onClick={handleExportXlsx}
                             className="text-sm font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg flex items-center gap-2 transition-colors border border-emerald-200"
                           >
-                            <Download size={16} /> Exportar CSV
+                            <Download size={16} /> Exportar XLSX
                           </button>
                         )}
                       </div>

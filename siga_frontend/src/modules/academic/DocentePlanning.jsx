@@ -164,6 +164,36 @@ export function DocentePlanning() {
     if (fileInputRefSilabo.current) fileInputRefSilabo.current.click();
   };
 
+  const archivoABase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+    reader.onerror = () => reject(new Error('No se pudo leer el archivo seleccionado.'));
+    reader.readAsDataURL(file);
+  });
+
+  const verDocumento = async (event, url) => {
+    event.preventDefault();
+    if (!url || url.startsWith('/docs/')) {
+      toast.error('Este registro aún no tiene un archivo adjunto válido.');
+      return;
+    }
+    const ventana = window.open('', '_blank');
+    try {
+      const blob = await apiClient.requestBlob(url);
+      if (!blob) {
+        ventana?.close();
+        return;
+      }
+      const objectUrl = URL.createObjectURL(blob);
+      if (ventana) ventana.location.href = objectUrl;
+      else window.open(objectUrl, '_blank', 'noopener,noreferrer');
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+    } catch (err) {
+      ventana?.close();
+      toast.error(err.message || 'No se pudo abrir el documento.');
+    }
+  };
+
   const handleUploadSilabo = async (e) => {
     const file = e.target.files && e.target.files[0];
     const target = uploadingTargetRef.current || uploadingTarget;
@@ -178,15 +208,17 @@ export function DocentePlanning() {
       return;
     }
 
-    // Simular subida (en producción se subiría a S3/GCS y se obtendría la URL)
-    const simulatedUrl = `/docs/silabos/${file.name.replace(/\s+/g, '_')}`;
     const cargaId = target.id;
 
     try {
+      const archivoBase64 = await archivoABase64(file);
       const payload = {
         carga_lectiva_id: parseInt(cargaId, 10),
         estado: "presentado",
-        archivo_url: simulatedUrl
+        archivo_url: null,
+        archivo_base64: archivoBase64,
+        archivo_nombre: file.name,
+        archivo_content_type: file.type || 'application/octet-stream'
       };
       await apiClient.request('/api/mod-programas-estudio/silabos', {
         method: 'POST',
@@ -238,16 +270,17 @@ export function DocentePlanning() {
       return;
     }
 
-    // Simular subida
-    const simulatedUrl = `/docs/planes/${file.name.replace(/\s+/g, '_')}`;
-
     try {
+      const archivoBase64 = await archivoABase64(file);
       const payload = {
         periodo_id: parseInt(selectedPeriod, 10),
         programa_id: parseInt(selectedProgram, 10),
         docente_id: parseInt(user.id, 10),
         estado: "presentado",
-        archivo_url: simulatedUrl
+        archivo_url: null,
+        archivo_base64: archivoBase64,
+        archivo_nombre: file.name,
+        archivo_content_type: file.type || 'application/octet-stream'
       };
       await apiClient.request('/api/mod-programas-estudio/planes-trabajo', {
         method: 'POST',
@@ -364,6 +397,7 @@ export function DocentePlanning() {
                     href={planActual.archivo_url} 
                     target="_blank" 
                     rel="noopener noreferrer"
+                    onClick={(e) => verDocumento(e, planActual.archivo_url)}
                     className="flex items-center space-x-2 text-sm text-primary hover:text-primary-dark font-medium mb-3"
                   >
                     <ExternalLink className="w-4 h-4" />
@@ -459,7 +493,7 @@ export function DocentePlanning() {
                                   </span>
                                 </div>
                                 <div className="flex space-x-2 items-center">
-                                  <a href={silabo.archivo_url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline flex items-center"><ExternalLink className="w-3 h-3 mr-1" />Ver Doc</a>
+                                  <a href={silabo.archivo_url} target="_blank" rel="noopener noreferrer" onClick={(e) => verDocumento(e, silabo.archivo_url)} className="text-xs text-primary hover:underline flex items-center"><ExternalLink className="w-3 h-3 mr-1" />Ver Doc</a>
                                   {silabo.estado !== 'aprobado' && (
                                     <button onClick={() => triggerUploadSilabo(carga.id)} className="text-xs text-slate-500 hover:text-slate-700 underline flex items-center">
                                       <RefreshCw className="w-3 h-3 mr-1" /> Actualizar

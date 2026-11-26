@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import React from 'react';
 import { ToastProvider } from '../core/ui/ToastContext';
+import { ConfirmProvider } from '../core/ui/ConfirmModal';
 import { EvaluationDashboard } from '../modules/evaluation/EvaluationDashboard';
 import { DocentePlanning } from '../modules/academic/DocentePlanning';
 import { apiClient } from '../core/api/client';
@@ -610,9 +611,11 @@ describe('Auditoría Frontend - Rol Docente (EvaluationDashboard & DocentePlanni
     });
 
     render(
-      <ToastProvider>
-        <DocentePlanning />
-      </ToastProvider>
+      <ConfirmProvider>
+        <ToastProvider>
+          <DocentePlanning />
+        </ToastProvider>
+      </ConfirmProvider>
     );
     const subirSilaboBtn = await screen.findByRole('button', { name: /Subir Sílabo/i });
     expect(subirSilaboBtn).toBeInTheDocument();
@@ -633,7 +636,10 @@ describe('Auditoría Frontend - Rol Docente (EvaluationDashboard & DocentePlanni
           body: JSON.stringify({
             carga_lectiva_id: 1,
             estado: 'presentado',
-            archivo_url: '/docs/silabos/mi_silabo.pdf'
+            archivo_url: null,
+            archivo_base64: 'ZHVtbXkgY29udGVudA==',
+            archivo_nombre: 'mi_silabo.pdf',
+            archivo_content_type: 'application/pdf'
           })
         })
       );
@@ -681,9 +687,11 @@ describe('Auditoría Frontend - Rol Docente (EvaluationDashboard & DocentePlanni
     });
 
     render(
-      <ToastProvider>
-        <DocentePlanning />
-      </ToastProvider>
+      <ConfirmProvider>
+        <ToastProvider>
+          <DocentePlanning />
+        </ToastProvider>
+      </ConfirmProvider>
     );
     const subirPlanBtn = await screen.findByRole('button', { name: /Subir Plan de Trabajo/i });
     expect(subirPlanBtn).toBeInTheDocument();
@@ -706,7 +714,10 @@ describe('Auditoría Frontend - Rol Docente (EvaluationDashboard & DocentePlanni
             programa_id: 1,
             docente_id: 10,
             estado: 'presentado',
-            archivo_url: '/docs/planes/plan_anual.pdf'
+            archivo_url: null,
+            archivo_base64: 'ZHVtbXkgcGxhbg==',
+            archivo_nombre: 'plan_anual.pdf',
+            archivo_content_type: 'application/pdf'
           })
         })
       );

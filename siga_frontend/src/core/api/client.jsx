@@ -55,7 +55,9 @@ class SIGAApiClient {
           try {
             const errorData = await response.json();
             errorMsg = errorData.detail || errorMsg;
-          } catch (_) {}
+          } catch (error) {
+            void error;
+          }
           throw new Error(errorMsg);
         }
         this.clearToken();
@@ -81,6 +83,31 @@ class SIGAApiClient {
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
     }
+  }
+
+  async requestBlob(endpoint, options = {}) {
+    const url = `${this.baseURL}${endpoint}`;
+    const headers = { ...(options.headers || {}) };
+    if (this.token) {
+      headers.Authorization = `Bearer ${this.token}`;
+    }
+    const response = await fetch(url, { ...options, headers });
+    if (response.status === 401) {
+      this.clearToken();
+      window.location.reload();
+      return null;
+    }
+    if (!response.ok) {
+      let errorMsg = `HTTP error! status: ${response.status}`;
+      try {
+        const errorData = await response.json();
+        errorMsg = errorData.detail || errorMsg;
+      } catch (error) {
+        void error;
+      }
+      throw new Error(errorMsg);
+    }
+    return await response.blob();
   }
 
   // Auth endpoints

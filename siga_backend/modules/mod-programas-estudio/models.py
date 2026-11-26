@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, Boolean, TIMESTAMP, ForeignKey, JSON, Date
+from sqlalchemy import Column, Integer, String, Text, Boolean, TIMESTAMP, ForeignKey, JSON, Date, LargeBinary, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from database import BaseModel
@@ -121,6 +121,18 @@ class PlanTrabajoDocente(BaseModel):
     estado = Column(String(30), default="borrador") # borrador, presentado, aprobado, observado
     archivo_url = Column(String(255))
     observaciones = Column(Text)
+
+class DocumentoPlanificacion(BaseModel):
+    """Contenido binario de sílabos y planes de trabajo"""
+    __tablename__ = "documentos_planificacion"
+    __table_args__ = (UniqueConstraint("tipo", "referencia_id", name="uq_documento_planificacion"),)
+
+    tipo = Column(String(20), nullable=False)
+    referencia_id = Column(Integer, nullable=False)
+    archivo_nombre = Column(String(255), nullable=False)
+    archivo_content_type = Column(String(100), nullable=False)
+    archivo_size = Column(Integer, nullable=False)
+    archivo_contenido = Column(LargeBinary, nullable=False)
 
 class Tutoria(BaseModel):
     """Asignación de Tutoría por Ciclo"""
