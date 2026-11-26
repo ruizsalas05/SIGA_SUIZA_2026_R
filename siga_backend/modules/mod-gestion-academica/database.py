@@ -5,7 +5,7 @@ from sqlalchemy.pool import NullPool
 import os
 import sys
 from datetime import datetime
-from sqlalchemy import Column, Integer, DateTime, String, JSON, Boolean, text
+from sqlalchemy import Column, Integer, DateTime, String, JSON, Boolean, text, Table
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
@@ -21,6 +21,13 @@ elif DATABASE_URL.startswith("postgresql://"):
 
 metadata = MetaData()
 Base = declarative_base(metadata=metadata)
+
+core_users_table = Table(
+    "core_users",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    extend_existing=True,
+)
 
 class TimeStampedMixin:
     created_at = Column(DateTime, default=datetime.utcnow)
